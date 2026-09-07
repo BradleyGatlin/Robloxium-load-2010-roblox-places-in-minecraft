@@ -73,9 +73,7 @@ This means an old place is not silently stripped just because Robloxium does not
 
 Shadows
 
-Custom Roblox sun shadows are currently disabled because the implementation was too buggy.
-
-The system previously read the sun position from RBXL/RBXLX lighting data and used it to determine the Roblox shadow direction. It is currently disabled for this build.
+The system reads the sun position from RBXL/RBXLX lighting data and used it to determine the Roblox shadow direction.
 
 Vulkan Renderer
 
