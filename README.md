@@ -11,6 +11,27 @@
 
 
 
+
+
+
+Commands
+
+/robloxium load <file> — loads a place from config/robloxium/places
+
+/robloxium unload — unloads the current place
+
+/robloxium info — displays Robloxium runtime information
+
+/robloxium roblox2010 start|stop|status — legacy 2010 client control; not currently required
+
+
+
+
+
+
+
+
+
 Core Architecture
 
 RobloxGame / DataModel / Workspace — implemented
@@ -21,12 +42,6 @@ Minecraft collision bridge — implemented
 Blaze3D/Fabric 26.2 world rendering — VULKAN REQUIRED. This build will not run its Roblox world renderer on OpenGL.
 
 Important: Robloxium's world renderer is explicitly Vulkan-only. You must launch Minecraft with the Vulkan backend enabled.
-
-Commands
-/robloxium load <file> — loads a place from config/robloxium/places
-/robloxium unload — unloads the current place
-/robloxium info — displays Robloxium runtime information
-/robloxium roblox2010 start|stop|status — legacy 2010 client control; not currently required
 
 The supplied normal 2010 client remains bundled under:
 
