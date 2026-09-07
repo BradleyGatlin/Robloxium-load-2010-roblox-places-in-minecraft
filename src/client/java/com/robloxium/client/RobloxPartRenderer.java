@@ -1162,13 +1162,24 @@ public final class RobloxPartRenderer {
         triangle(pose,b,p,a,bb,c,n,color,new float[]{0,0,1,0,0,1});
     }
     private static void drawWedge(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,double hx,double hy,double hz,int col){
-        Vec3 a=new Vec3(-hx,-hy,-hz),bb=new Vec3(hx,-hy,-hz),c=new Vec3(hx,-hy,hz),d=new Vec3(-hx,-hy,hz);
-        Vec3 e=new Vec3(-hx,hy,-hz),f=new Vec3(hx,hy,-hz);
+        // WedgePart visual geometry only. The collision shape is handled elsewhere
+        // and is intentionally untouched. The ramp is flipped so the high edge is +Z.
+        // The sloped face is emitted as exactly two triangles with no overlap.
+        Vec3 a=new Vec3(-hx,-hy,-hz);
+        Vec3 bb=new Vec3(hx,-hy,-hz);
+        Vec3 c=new Vec3(hx,-hy,hz);
+        Vec3 d=new Vec3(-hx,-hy,hz);
+        Vec3 e=new Vec3(-hx,hy,hz);
+        Vec3 f=new Vec3(hx,hy,hz);
+
         face(pose,b,p,a,bb,c,d,0,-1,0,col);
-        face(pose,b,p,a,e,f,bb,0,0,-1,col);
-        triangleFace(pose,b,p,a,d,e,new Vec3(-1,0,0),col);
-        triangleFace(pose,b,p,bb,f,c,new Vec3(1,0,0),col);
-        quad(pose,b,p,e,f,c,d,new Vec3(0,hz,hy),col);
+        face(pose,b,p,a,bb,f,e,0,0,-1,col);
+        triangleFace(pose,b,p,a,e,d,new Vec3(-1,0,0),col);
+        triangleFace(pose,b,p,bb,c,f,new Vec3(1,0,0),col);
+
+        // Flipped ramp: two non-overlapping triangles, sharing only the diagonal.
+        triangleFace(pose,b,p,e,f,c,new Vec3(0,hz,hy),col);
+        triangleFace(pose,b,p,e,c,d,new Vec3(0,hz,hy),col);
     }
     private static void drawCornerWedge(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,double hx,double hy,double hz,int col){
         // Closed corner-wedge volume. Keeping every face explicit avoids the
