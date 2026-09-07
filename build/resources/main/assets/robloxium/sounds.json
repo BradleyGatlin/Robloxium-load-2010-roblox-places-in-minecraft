@@ -1,0 +1,10 @@
+{
+  "footstep1": {"sounds": ["robloxium:footstep1"]},
+  "footstep2": {"sounds": ["robloxium:footstep2"]},
+  "collide": {"sounds": ["robloxium:collide"]},
+  "button": {"sounds": ["robloxium:button"]},
+  "clickfast": {"sounds": ["robloxium:clickfast"]},
+  "swoosh": {"sounds": ["robloxium:swoosh"]},
+  "hit": {"sounds": ["robloxium:hit"]},
+  "victory": {"sounds": ["robloxium:victory"]}
+}
