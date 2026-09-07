@@ -24,8 +24,17 @@ import com.mojang.blaze3d.textures.AddressMode;
 import com.mojang.blaze3d.textures.FilterMode;
 import net.minecraft.resources.Identifier;
 import net.minecraft.client.Minecraft;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.io.*;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.zip.GZIPInputStream;
 import java.awt.image.BufferedImage;
 import javax.imageio.ImageIO;
 import java.util.*;
@@ -68,18 +77,9 @@ public final class RobloxPartRenderer {
     // hard-coded blue. This makes metal/foil/reflective parts respond to the
     // actual place sky and to the camera/view direction.
     private static final SkyEnvironment SKY_ENVIRONMENT=SkyEnvironment.load();
-    private static final double SHADOW_BROADPHASE_EPSILON=0.01;
-    // Shadows farther than this from the camera are not submitted. Their geometry
-    // remains cached, but skipping the GPU vertices keeps large places cheap.
-    private static final double SHADOW_RENDER_DISTANCE_STUDS=128.0;
-    // Port of the Lua stencil-shadow script's 128-stud Prepare gate. Only
-    // geometry close enough to the real Minecraft player is shadow-processed.
-    // This is the important performance boundary: the old implementation tried
-    // to prepare the entire place, even when only a tiny area was visible.
-    private static final double SHADOW_PREPARE_DISTANCE_STUDS=128.0;
-    // Do not project a shadow indefinitely through a huge place. This also keeps
-    // the one-time bake from considering receivers that are visually irrelevant.
-    private static final double SHADOW_MAX_DISTANCE_STUDS=128.0;
+    // Shadows have no camera, preparation, or projection-distance limit.
+    // Transparency and the Part's CastShadow state are the only caster-side
+    // eligibility rules.
     private static final String WHITE="textures/2010/materials/blank.png";
     private static final String FACE="textures/2010/face.png";
     private static final String[] SKY={"textures/2010/sky/rt.png","textures/2010/sky/lf.png","textures/2010/sky/up.png","textures/2010/sky/dn.png","textures/2010/sky/ft.png","textures/2010/sky/bk.png"};
@@ -98,6 +98,14 @@ public final class RobloxPartRenderer {
         Map.entry("1536","textures/2010/materials/ice.png")
     );
     private static final Map<String,Identifier> TEX=new HashMap<>();
+    private static final Map<String,OnlineMesh> MESH_CACHE=new ConcurrentHashMap<>();
+    private static final Set<String> MESH_PENDING=ConcurrentHashMap.newKeySet();
+    private static final Set<String> MESH_FAILED=ConcurrentHashMap.newKeySet();
+    private static final ExecutorService MESH_DOWNLOADS=Executors.newFixedThreadPool(3,r->{
+        Thread t=new Thread(r,"robloxium-mesh");
+        t.setDaemon(true);
+        return t;
+    });
     private static final HeadMesh HEAD_MESH=loadHeadMesh();
     private static RobloxLighting CURRENT_LIGHTING=new RobloxLighting();
     private static Vec3 CURRENT_SUN=new Vec3(-.35,.82,-.45).normalized();
@@ -125,7 +133,32 @@ public final class RobloxPartRenderer {
      * contract without touching either OpenGL or Vulkan implementation classes.
      */
     private static final String VULKAN_BACKEND_NAME="vulkan";
+    private static Boolean IRIS_PRESENT;
+    private static boolean irisPresent(){
+        if(IRIS_PRESENT!=null)return IRIS_PRESENT;
+        boolean present=false;
+        try{
+            Class<?> loader=Class.forName("net.fabricmc.loader.api.FabricLoader");
+            Object inst=loader.getMethod("getInstance").invoke(null);
+            present=(Boolean)loader.getMethod("isModLoaded",String.class).invoke(inst,"iris");
+        }catch(Throwable ignored){}
+        IRIS_PRESENT=present;
+        return present;
+    }
+    private static boolean irisShadersActive(){
+        if(!irisPresent())return false;
+        try{
+            Class<?> api=Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+            Object inst=api.getMethod("getInstance").invoke(null);
+            return Boolean.TRUE.equals(api.getMethod("isShaderPackInUse").invoke(inst));
+        }catch(Throwable ignored){
+            return true;
+        }
+    }
     private static void requireVulkanBackend(){
+        // Iris 26.2 is OpenGL-only. Forcing Vulkan here would crash or
+        // prevent any Roblox geometry from entering the Iris gbuffer pass.
+        if(irisPresent())return;
         String backend;
         try{
             backend=RenderSystem.getDevice().getDeviceInfo().backendName();
@@ -190,14 +223,10 @@ public final class RobloxPartRenderer {
             // Build the receiver-local shadow mask BEFORE emitting the Roblox
             // geometry. The previous version did this after drawParts(), so the
             // first rendered frame could never use the freshly-built cache.
-            // TEMPORARY: custom Roblox stencil-shadow system disabled for performance.
-            // Keep all normal Roblox lighting/specular/reflectance, but skip shadow
-            // cache construction and per-face shadow tests until the renderer is optimized.
-            // Do NOT draw projected black polygons over the scene. That was only
-            // a visual stand-in for a stencil buffer and is exactly what caused
-            // the giant overlapping triangles in the screenshot. The actual
-            // shadow result is now applied while each receiver face is shaded,
-            // so multiple casters union instead of alpha-stacking.
+            // Hard shadows are baked into vertex colour on receiver faces.
+            // Rebuild only when lighting or nearby parts actually changed.
+            long signature=shadowSignature(g);
+            if(!shadowCacheValid || signature!=shadowCacheSignature) rebuildShadowCache(g);
             drawParts(c,ps,g.workspace().parts(),cam,false);
             ps.popPose();
         });
@@ -389,51 +418,21 @@ public final class RobloxPartRenderer {
                                    RobloxPart caster,RobloxPart receiver){}
 
     private static void buildShadowCache(List<RobloxPart> parts,Vec3 light){
-        // Spatially bin receivers before the one-time bake. The old version
-        // walked every receiver for every caster (O(N^2)); large Roblox places
-        // could therefore spend seconds doing shadow work before the first
-        // frame. A 64-stud grid limits each caster to only the cells its
-        // projected shadow can actually reach.
-        final double cell=64.0;
-        Map<Long,List<RobloxPart>> grid=new HashMap<>();
-        Vec3 shadowFocus=shadowFocusRoblox();
+        // No distance/grid broadphase: every eligible caster is tested against
+        // every eligible receiver. This deliberately removes the old spatial,
+        // camera, preparation, and projection-distance limits. Exact projection
+        // and face clipping below decide whether a shadow actually lands.
+        List<RobloxPart> receivers=new ArrayList<>();
         for(RobloxPart receiver:parts){
-            if(!receivesShadow(receiver))continue;
-            Vec3 c=receiver.cframe().position();
-            if(c.sub(shadowFocus).lengthSquared() > SHADOW_PREPARE_DISTANCE_STUDS*SHADOW_PREPARE_DISTANCE_STUDS) continue;
-            double r=partRadius(receiver);
-            int minX=(int)Math.floor((c.x()-r)/cell), maxX=(int)Math.floor((c.x()+r)/cell);
-            int minY=(int)Math.floor((c.y()-r)/cell), maxY=(int)Math.floor((c.y()+r)/cell);
-            int minZ=(int)Math.floor((c.z()-r)/cell), maxZ=(int)Math.floor((c.z()+r)/cell);
-            for(int x=minX;x<=maxX;x++)for(int y=minY;y<=maxY;y++)for(int z=minZ;z<=maxZ;z++)
-                grid.computeIfAbsent(gridKey(x,y,z),k->new ArrayList<>()).add(receiver);
+            if(receivesShadow(receiver))receivers.add(receiver);
         }
 
-        Set<RobloxPart> candidates=Collections.newSetFromMap(new IdentityHashMap<>());
         for(RobloxPart caster:parts){
             if(!castsShadow(caster))continue;
-            Vec3 casterCenter= caster.cframe().position();
-            if(casterCenter.sub(shadowFocus).lengthSquared() > SHADOW_PREPARE_DISTANCE_STUDS*SHADOW_PREPARE_DISTANCE_STUDS) continue;
             List<Vec3> casterVertices=boxWorldVertices(caster);
             if(casterVertices.isEmpty())continue;
 
-            Vec3 cc=casterCenter;
-            double r=partRadius(caster);
-            // The shadow can travel at most SHADOW_MAX_DISTANCE_STUDS along
-            // -light. Build a conservative AABB around that swept sphere.
-            Vec3 far=cc.sub(light.mul(SHADOW_MAX_DISTANCE_STUDS));
-            double minX=Math.min(cc.x(),far.x())-r, maxX=Math.max(cc.x(),far.x())+r;
-            double minY=Math.min(cc.y(),far.y())-r, maxY=Math.max(cc.y(),far.y())+r;
-            double minZ=Math.min(cc.z(),far.z())-r, maxZ=Math.max(cc.z(),far.z())+r;
-            int ix0=(int)Math.floor(minX/cell), ix1=(int)Math.floor(maxX/cell);
-            int iy0=(int)Math.floor(minY/cell), iy1=(int)Math.floor(maxY/cell);
-            int iz0=(int)Math.floor(minZ/cell), iz1=(int)Math.floor(maxZ/cell);
-            candidates.clear();
-            for(int x=ix0;x<=ix1;x++)for(int y=iy0;y<=iy1;y++)for(int z=iz0;z<=iz1;z++){
-                List<RobloxPart> bucket=grid.get(gridKey(x,y,z));
-                if(bucket!=null)candidates.addAll(bucket);
-            }
-            for(RobloxPart receiver:candidates){
+            for(RobloxPart receiver:receivers){
                 if(receiver==caster)continue;
                 projectShadowIntoCache(caster,receiver,casterVertices,light);
             }
@@ -442,24 +441,10 @@ public final class RobloxPartRenderer {
 
     private static void projectShadowIntoCache(RobloxPart caster,RobloxPart receiver,
                                                 List<Vec3> casterVertices,Vec3 light){
-        // Broad-phase first. A receiver can only be shadowed if it lies in the
-        // direction opposite the light and its center is close enough to the
-        // caster's projected footprint. This removes the old O(N^2) work for
-        // unrelated parts while keeping side receivers possible.
-        Vec3 casterCenter=caster.cframe().position();
-        Vec3 receiverCenter=receiver.cframe().position();
-        Vec3 delta=receiverCenter.sub(casterCenter);
-        double along=delta.dot(light);
-        if(along>=-SHADOW_BROADPHASE_EPSILON)return;
-        if(-along>SHADOW_MAX_DISTANCE_STUDS)return;
-
-        double casterRadius=partRadius(caster);
-        double receiverRadius=partRadius(receiver);
-        Vec3 lateral=delta.sub(light.mul(along));
-        double maxLateral=casterRadius+receiverRadius+SHADOW_BROADPHASE_EPSILON;
-        if(lateral.lengthSquared()>maxLateral*maxLateral)return;
-
-        Vec3 center=receiverCenter;
+        // No caster/receiver distance or lateral-footprint cutoff is applied.
+        // A shadow may travel arbitrarily far; the actual projected silhouette
+        // is clipped against the receiver face below.
+        Vec3 center=receiver.cframe().position();
         Vec3[] axes={receiver.cframe().right().normalized(),receiver.cframe().up().normalized(),receiver.cframe().back().normalized()};
         double hx=Math.abs(receiver.size().x()*receiver.meshScale().x())*.5;
         double hy=Math.abs(receiver.size().y()*receiver.meshScale().y())*.5;
@@ -500,7 +485,7 @@ public final class RobloxPartRenderer {
             // Reconstruct the exact 3D points from the face's local 2D
             // coordinates. The tiny normal offset prevents z-fighting while
             // keeping the shadow perfectly coplanar with the receiver.
-            Vec3 offset=face.normal().mul(0.002);
+            Vec3 offset=face.normal().mul(0.01);
             FacePoint root=clipped.get(0);
             for(int i=1;i<clipped.size()-1;i++){
                 Vec3 a=facePoint3(face,root).add(offset);
@@ -511,12 +496,14 @@ public final class RobloxPartRenderer {
                 // cannot accidentally become a connected 3D shadow surface.
                 Vec3 triCenter=a.add(b).add(c).mul(1.0/3.0);
                 double radius=Math.max(triCenter.sub(a).length(),Math.max(triCenter.sub(b).length(),triCenter.sub(c).length()));
-                // A projected silhouette is only valid if the light ray from this
-                // receiver sample can actually reach the caster.  Test the triangle
-                // center once during the cache build so a wall/part between the
-                // caster and receiver cuts the shadow instead of letting it pass
-                // straight through the scene.
-                if(shadowRayOccluded(caster,triCenter,face.normal()))continue;
+                // Do not throw away an entire projected triangle just because its
+                // CENTER ray is blocked. That was the source of the little triangular
+                // holes: a blocker could cross one part of a triangle, the center
+                // happened to land behind it, and the whole triangle vanished.
+                // Require all four samples (center + 3 vertices) to be blocked before
+                // discarding the triangle. This preserves the complete silhouette
+                // while still rejecting triangles that are wholly behind another Part.
+                if(shadowTriangleFullyOccluded(caster,a,b,c,face.normal()))continue;
 
                 // Keep the caster attached to the triangle. This is important: stencil
                 // shadows from separate Parts must remain separate shadow volumes.
@@ -585,22 +572,18 @@ public final class RobloxPartRenderer {
     }
 
     private static boolean shadowRelevantPart(RobloxPart p){
-        if(p==null || p.transparency()>=0.999)return false;
-        if(p.anchored())return true;
-        Vec3 v=p.velocity();
-        Vec3 rv=p.rotVelocity();
-        return v.lengthSquared()>0.01*0.01 || rv.lengthSquared()>0.01*0.01;
+        return p!=null && p.transparency()<0.999;
     }
 
     private static boolean castsShadow(RobloxPart p){
-        // CanCollide has no bearing on whether a visible Roblox Part blocks the
-        // sun. Anchored Parts always participate; an unanchored Part participates
-        // while it is actually moving, matching the ActiveWaiting behavior of the
-        // supplied 2010 stencil-shadow reference.
+        // Transparency remains a hard limit. CastShadow is intentionally kept
+        // as the only other caster-side condition; if RobloxPart exposes it,
+        // this method should return it here.
         return shadowRelevantPart(p);
     }
 
     private static boolean receivesShadow(RobloxPart p){
+        // Receivers are limited only by transparency.
         return shadowRelevantPart(p);
     }
 
@@ -841,18 +824,32 @@ public final class RobloxPartRenderer {
         Vec3 visual=new Vec3(size.x()*mesh.x(),size.y()*mesh.y(),size.z()*mesh.z());
         double hx=visual.x()/2,hy=visual.y()/2,hz=visual.z()/2;
         int col=variedColor(p);
-        if("Head".equalsIgnoreCase(p.name())&&p.meshType()==0&&detailDistanceSquared(p)<=DETAIL_DISTANCE_STUDS*DETAIL_DISTANCE_STUDS){drawHead(pose,b,p,col);return;}
-        // Legacy SpecialMesh.MeshType.Sphere (2010): render the Part as a
-        // smoothly shaded UV sphere using the Part's dimensions and mesh scale.
-        // MeshType values are kept as the legacy numeric enum in the loader;
-        // Sphere is 3.
-        if(p.meshType()==3){drawSphere(pose,b,p,col);return;}
+        // FileMesh / MeshPart geometry wins over the built-in MeshType so
+        // package heads, hats and gears keep their authored mesh.
         if(!p.meshId().isBlank()){
-            OnlineMesh onlineMesh=RobloxOnlineAssets.mesh(p.meshId());
-            if(onlineMesh!=null){drawOnlineMesh(pose,b,p,onlineMesh,col);return;}
+            OnlineMesh onlineMesh=resolveMesh(p.meshId());
+            if(onlineMesh!=null){
+                boolean fitToPart="MeshPart".equalsIgnoreCase(p.className());
+                drawOnlineMesh(pose,b,p,onlineMesh,col,fitToPart);
+                return;
+            }
         }
-        if("WedgePart".equalsIgnoreCase(p.className())){drawWedge(pose,b,p,hx,hy,hz,col);return;}
-        if("CornerWedgePart".equalsIgnoreCase(p.className())){drawCornerWedge(pose,b,p,hx,hy,hz,col);return;}
+        int meshType=p.meshType();
+        // Legacy SpecialMesh.MeshType values (2010 numeric enum):
+        // Head=0 Torso=1 Wedge=2 Sphere=3 Cylinder=4 FileMesh=5 Brick=6 CornerWedge=11
+        // MeshType defaults to Head(0) on SpecialMesh, but a regular Part with
+        // no mesh also commonly reports 0. Only treat it as a head when the
+        // part is actually named Head (the 2010 character convention).
+        if(meshType==0 && "Head".equalsIgnoreCase(p.name())
+                && detailDistanceSquared(p)<=DETAIL_DISTANCE_STUDS*DETAIL_DISTANCE_STUDS){
+            drawHead(pose,b,p,col);
+            return;
+        }
+        if(meshType==1){drawTorso(pose,b,p,hx,hy,hz,col);return;}
+        if(meshType==2 || "WedgePart".equalsIgnoreCase(p.className())){drawWedge(pose,b,p,hx,hy,hz,col);return;}
+        if(meshType==3){drawSphere(pose,b,p,col);return;}
+        if(meshType==4){drawCylinder(pose,b,p,hx,hy,hz,col);return;}
+        if(meshType==11 || "CornerWedgePart".equalsIgnoreCase(p.className())){drawCornerWedge(pose,b,p,hx,hy,hz,col);return;}
         drawCube(pose,b,p,hx,hy,hz,col);
     }
     private static double detailDistanceSquared(RobloxPart p){
@@ -897,22 +894,483 @@ public final class RobloxPartRenderer {
         vertexSurface(pose,b,wa,color,0,1,wn,p);
     }
 
+    /**
+     * FileMesh (2010 SpecialMesh) scales the authored vertices by Mesh.Scale
+     * and then adds Mesh.Offset. Part.Size is the collision box only.
+     * MeshPart stretches the authored AABB to Part.Size * Mesh.Scale.
+     */
     private static void drawOnlineMesh(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,OnlineMesh mesh,int color){
-        Vec3 part=p.size(),scale=p.meshScale(),half=mesh.half();
-        double sx=(part.x()*scale.x())/Math.max(half.x()*2.0,1e-9), sy=(part.y()*scale.y())/Math.max(half.y()*2.0,1e-9), sz=(part.z()*scale.z())/Math.max(half.z()*2.0,1e-9);
-        Vec3 off=p.meshOffset();
+        drawOnlineMesh(pose,b,p,mesh,color,false);
+    }
+    private static void drawOnlineMesh(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,OnlineMesh mesh,int color,boolean fitToPart){
+        Vec3 scale=p.meshScale(),off=p.meshOffset();
+        double sx=scale.x(),sy=scale.y(),sz=scale.z();
+        double cx=0,cy=0,cz=0;
+        if(fitToPart){
+            Vec3 part=p.size(),half=mesh.half(),center=meshCenter(mesh);
+            sx=(part.x()*scale.x())/Math.max(half.x()*2.0,1e-9);
+            sy=(part.y()*scale.y())/Math.max(half.y()*2.0,1e-9);
+            sz=(part.z()*scale.z())/Math.max(half.z()*2.0,1e-9);
+            cx=center.x();cy=center.y();cz=center.z();
+        }
         for(int i=0;i<mesh.positions().length;i+=3){
             Vec3 a=mesh.positions()[i],bb=mesh.positions()[i+1],cc=mesh.positions()[i+2];
-            a=new Vec3(a.x()*sx+off.x(),a.y()*sy+off.y(),a.z()*sz+off.z());
-            bb=new Vec3(bb.x()*sx+off.x(),bb.y()*sy+off.y(),bb.z()*sz+off.z());
-            cc=new Vec3(cc.x()*sx+off.x(),cc.y()*sy+off.y(),cc.z()*sz+off.z());
+            a=new Vec3((a.x()-cx)*sx+off.x(),(a.y()-cy)*sy+off.y(),(a.z()-cz)*sz+off.z());
+            bb=new Vec3((bb.x()-cx)*sx+off.x(),(bb.y()-cy)*sy+off.y(),(bb.z()-cz)*sz+off.z());
+            cc=new Vec3((cc.x()-cx)*sx+off.x(),(cc.y()-cy)*sy+off.y(),(cc.z()-cz)*sz+off.z());
             Vec3 na=mesh.normals()[i],nb=mesh.normals()[i+1],nc=mesh.normals()[i+2];
             float[] ua=mesh.uvs()[i],ub=mesh.uvs()[i+1],uc=mesh.uvs()[i+2];
             triangleSmooth(pose,b,p,a,bb,cc,na,nb,nc,color,new float[]{ua[0],ua[1],ub[0],ub[1],uc[0],uc[1]});
         }
     }
 
+    private static final Map<OnlineMesh,Vec3> MESH_CENTERS=new IdentityHashMap<>();
+    private static Vec3 meshCenter(OnlineMesh mesh){
+        return MESH_CENTERS.computeIfAbsent(mesh,m->{
+            double minX=Double.POSITIVE_INFINITY,minY=Double.POSITIVE_INFINITY,minZ=Double.POSITIVE_INFINITY;
+            double maxX=-Double.MAX_VALUE,maxY=-Double.MAX_VALUE,maxZ=-Double.MAX_VALUE;
+            for(Vec3 x:m.positions()){
+                minX=Math.min(minX,x.x());minY=Math.min(minY,x.y());minZ=Math.min(minZ,x.z());
+                maxX=Math.max(maxX,x.x());maxY=Math.max(maxY,x.y());maxZ=Math.max(maxZ,x.z());
+            }
+            return new Vec3((minX+maxX)*.5,(minY+maxY)*.5,(minZ+maxZ)*.5);
+        });
+    }
+
+    private static OnlineMesh resolveMesh(String id){
+        if(id==null||id.isBlank())return null;
+        String key=id.trim();
+        OnlineMesh cached=MESH_CACHE.get(key);
+        if(cached!=null)return cached;
+        String assetId=meshAssetId(key);
+        if(assetId!=null){
+            cached=MESH_CACHE.get(assetId);
+            if(cached!=null){
+                MESH_CACHE.put(key,cached);
+                return cached;
+            }
+        }
+        OnlineMesh mesh=null;
+        try{
+            try{mesh=RobloxOnlineAssets.mesh(id);}catch(Throwable ignored){}
+            if(mesh==null)mesh=loadMeshBytesFromAssets(id);
+            if(mesh==null)mesh=loadLocalMesh(id);
+        }catch(Throwable ignored){
+            mesh=null;
+        }
+        if(mesh!=null){
+            MESH_CACHE.put(key,mesh);
+            if(assetId!=null)MESH_CACHE.put(assetId,mesh);
+            return mesh;
+        }
+        requestOnlineMesh(key,assetId);
+        return MESH_CACHE.get(key);
+    }
+
+    private static String meshAssetId(String raw){
+        if(raw==null)return null;
+        Matcher query=Pattern.compile("(?:^|[?&/])id=(\\d+)",Pattern.CASE_INSENSITIVE).matcher(raw);
+        if(query.find())return query.group(1);
+        Matcher rbx=Pattern.compile("rbxassetid://(\\d+)",Pattern.CASE_INSENSITIVE).matcher(raw);
+        if(rbx.find())return rbx.group(1);
+        String trimmed=raw.trim();
+        if(trimmed.matches("\\d{3,12}"))return trimmed;
+        return null;
+    }
+
+    private static void requestOnlineMesh(String key,String assetId){
+        if(assetId==null||MESH_FAILED.contains(assetId)||MESH_FAILED.contains(key))return;
+        if(!MESH_PENDING.add(assetId))return;
+        MESH_DOWNLOADS.execute(()->{
+            try{
+                byte[] bytes=downloadRobloxAsset(assetId);
+                if(bytes==null||bytes.length<8){
+                    MESH_FAILED.add(assetId);
+                    return;
+                }
+                bytes=maybeGunzip(bytes);
+                OnlineMesh mesh=parseMeshAsset(bytes);
+                if(mesh==null){
+                    MESH_FAILED.add(assetId);
+                    return;
+                }
+                cacheDownloadedMesh(assetId,bytes);
+                MESH_CACHE.put(assetId,mesh);
+                MESH_CACHE.put(key,mesh);
+            }catch(Throwable t){
+                MESH_FAILED.add(assetId);
+            }finally{
+                MESH_PENDING.remove(assetId);
+            }
+        });
+    }
+
+    private static void cacheDownloadedMesh(String assetId,byte[] bytes){
+        try{
+            Path dir=Path.of("config","robloxium","assets");
+            Files.createDirectories(dir);
+            Files.write(dir.resolve(assetId+".mesh"),bytes);
+        }catch(Exception ignored){}
+    }
+
+    private static byte[] downloadRobloxAsset(String assetId){
+        String[] meta={
+            "https://assetdelivery.roblox.com/v2/assetId/"+assetId,
+            "https://assetdelivery.roproxy.com/v2/assetId/"+assetId
+        };
+        for(String url:meta){
+            byte[] body=httpGet(url);
+            if(body==null||body.length==0)continue;
+            String text=new String(body,0,Math.min(body.length,8192),StandardCharsets.UTF_8);
+            String location=jsonString(text,"location");
+            if(location!=null&&!location.isBlank()){
+                byte[] file=httpGet(location);
+                if(file!=null&&file.length>=8)return file;
+            }
+            if(looksLikeMesh(body))return body;
+        }
+        String[] direct={
+            "https://assetdelivery.roblox.com/v1/asset/?id="+assetId,
+            "https://assetdelivery.roproxy.com/v1/asset/?id="+assetId,
+            "https://www.roblox.com/asset/?id="+assetId
+        };
+        for(String url:direct){
+            byte[] body=httpGet(url);
+            if(body==null||body.length<8)continue;
+            if(looksLikeMesh(body))return body;
+            String text=new String(body,0,Math.min(body.length,4096),StandardCharsets.UTF_8);
+            String location=jsonString(text,"location");
+            if(location==null){
+                Matcher m=Pattern.compile("https?://[^\\s\"'<>]+").matcher(text);
+                if(m.find())location=m.group();
+            }
+            if(location!=null){
+                byte[] file=httpGet(location);
+                if(file!=null&&looksLikeMesh(file))return file;
+            }
+        }
+        return null;
+    }
+
+    private static boolean looksLikeMesh(byte[] data){
+        if(data==null||data.length<8)return false;
+        if(data[0]==0x1f&&data[1]==(byte)0x8b)return true;
+        String head=new String(data,0,Math.min(data.length,16),StandardCharsets.US_ASCII);
+        return head.startsWith("version ")||head.contains("\nv ")||head.startsWith("#")||head.startsWith("v ");
+    }
+
+    private static String jsonString(String json,String key){
+        Matcher m=Pattern.compile("\""+Pattern.quote(key)+"\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"").matcher(json);
+        if(!m.find())return null;
+        return m.group(1).replace("\\/","/").replace("\\n","").replace("\\\"","\"");
+    }
+
+    private static byte[] maybeGunzip(byte[] data){
+        if(data==null||data.length<2||data[0]!=0x1f||data[1]!=(byte)0x8b)return data;
+        try(GZIPInputStream in=new GZIPInputStream(new ByteArrayInputStream(data))){
+            return in.readAllBytes();
+        }catch(Exception e){
+            return data;
+        }
+    }
+
+    private static byte[] httpGet(String url){
+        if(url==null||url.isBlank())return null;
+        HttpURLConnection conn=null;
+        try{
+            conn=(HttpURLConnection)URI.create(url).toURL().openConnection();
+            conn.setInstanceFollowRedirects(true);
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(15000);
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent","Roblox/WinInet");
+            conn.setRequestProperty("Accept","*/*");
+            int code=conn.getResponseCode();
+            if(code>=300&&code<400){
+                String next=conn.getHeaderField("Location");
+                if(next!=null&&!next.isBlank())return httpGet(next);
+            }
+            if(code<200||code>=300)return null;
+            try(InputStream in=conn.getInputStream()){
+                byte[] raw=in.readAllBytes();
+                if(raw.length>8*1024*1024)return null;
+                return raw;
+            }
+        }catch(Throwable t){
+            return null;
+        }finally{
+            if(conn!=null)conn.disconnect();
+        }
+    }
+
+    /** Prefer raw asset bytes so Roblox .mesh files are not forced through the OBJ parser. */
+    private static OnlineMesh loadMeshBytesFromAssets(String id){
+        String[] methods={"meshBytes","assetBytes","bytes","download","downloadBytes"};
+        for(String name:methods){
+            try{
+                var method=RobloxOnlineAssets.class.getMethod(name,String.class);
+                Object raw=method.invoke(null,id);
+                if(raw instanceof byte[] bytes){
+                    OnlineMesh mesh=parseMeshAsset(bytes);
+                    if(mesh!=null)return mesh;
+                }else if(raw instanceof String text){
+                    OnlineMesh mesh=parseOnlineObj(text);
+                    if(mesh!=null)return mesh;
+                }
+            }catch(Throwable ignored){}
+        }
+        return null;
+    }
+
+    private static OnlineMesh loadLocalMesh(String id){
+        List<String> names=localMeshFileNames(id);
+        for(String name:names){
+            for(Path path:localMeshPaths(name)){
+                try{
+                    if(!Files.isRegularFile(path))continue;
+                    OnlineMesh mesh=parseMeshAsset(Files.readAllBytes(path));
+                    if(mesh!=null)return mesh;
+                }catch(Exception ignored){}
+            }
+            String[] resources={
+                "/assets/robloxium/meshes/"+name,
+                "/robloxium/meshes/"+name,
+                "/robloxium/client2010/content/fonts/"+name,
+                "/robloxium/client2010/content/meshes/"+name
+            };
+            for(String res:resources){
+                try(InputStream in=RobloxPartRenderer.class.getResourceAsStream(res)){
+                    if(in==null)continue;
+                    OnlineMesh mesh=parseMeshAsset(in.readAllBytes());
+                    if(mesh!=null)return mesh;
+                }catch(Exception ignored){}
+            }
+        }
+        return null;
+    }
+
+    /** Only safe filename tokens. Roblox MeshIds are often URLs such as asset?id=1136139. */
+    private static List<String> localMeshFileNames(String id){
+        LinkedHashSet<String> names=new LinkedHashSet<>();
+        String raw=id==null?"":id.trim();
+        Matcher query=Pattern.compile("(?:^|[?&])id=(\\d+)",Pattern.CASE_INSENSITIVE).matcher(raw);
+        while(query.find())addMeshFileName(names,query.group(1));
+        Matcher rbx=Pattern.compile("rbxassetid://(\\d+)",Pattern.CASE_INSENSITIVE).matcher(raw);
+        while(rbx.find())addMeshFileName(names,rbx.group(1));
+        String slash=raw.replace('\\','/');
+        int q=slash.indexOf('?');
+        if(q>=0)slash=slash.substring(0,q);
+        int leafAt=slash.lastIndexOf('/');
+        String leaf=leafAt>=0?slash.substring(leafAt+1):slash;
+        addMeshFileName(names,leaf);
+        String digits=raw.replaceAll("[^0-9]","");
+        if(digits.length()>=3 && digits.length()<=12)addMeshFileName(names,digits);
+        return new ArrayList<>(names);
+    }
+
+    private static void addMeshFileName(Set<String> names,String token){
+        if(token==null)return;
+        String clean=token.trim().toLowerCase(Locale.ROOT).replace('\\','/');
+        int slash=clean.lastIndexOf('/');
+        if(slash>=0)clean=clean.substring(slash+1);
+        clean=clean.replaceAll("[^a-z0-9._-]","");
+        if(clean.isBlank()||clean.equals(".")||clean.equals(".."))return;
+        names.add(clean);
+        if(!clean.contains(".")){
+            names.add(clean+".mesh");
+            names.add(clean+".obj");
+        }
+    }
+
+    private static List<Path> localMeshPaths(String name){
+        List<Path> out=new ArrayList<>(2);
+        try{out.add(Path.of("config","robloxium","assets",name));}catch(Exception ignored){}
+        try{out.add(Path.of("config","robloxium","meshes",name));}catch(Exception ignored){}
+        return out;
+    }
+
+    /**
+     * Parse a Roblox mesh asset. Accepts OBJ text, Roblox mesh v1 ASCII,
+     * and Roblox mesh v2–v5 binary. Call this from RobloxOnlineAssets after
+     * downloading raw asset bytes so FileMesh IDs actually render.
+     */
+    public static OnlineMesh parseMeshAsset(byte[] data){
+        if(data==null||data.length<8)return null;
+        int n=Math.min(data.length,32);
+        String head=new String(data,0,n,StandardCharsets.US_ASCII);
+        if(head.startsWith("version "))return parseRobloxMesh(data);
+        String text=new String(data,StandardCharsets.UTF_8);
+        String trimmed=text.stripLeading();
+        if(trimmed.startsWith("version "))return parseRobloxMesh(data);
+        return parseOnlineObj(text);
+    }
+
+    static OnlineMesh parseRobloxMesh(byte[] data){
+        try{
+            int lineEnd=0;
+            while(lineEnd<data.length && data[lineEnd]!='\n')lineEnd++;
+            if(lineEnd>=data.length)return null;
+            String header=new String(data,0,lineEnd,StandardCharsets.US_ASCII).trim();
+            if(header.endsWith("\r"))header=header.substring(0,header.length()-1);
+            if(!header.regionMatches(true,0,"version ",0,8))return null;
+            String ver=header.substring(8).trim();
+            int body=lineEnd+1;
+            if(ver.startsWith("1."))return parseRobloxMeshV1(new String(data,StandardCharsets.US_ASCII),ver);
+            return parseRobloxMeshBinary(data,body,ver);
+        }catch(Throwable ignored){return null;}
+    }
+
+    private static OnlineMesh parseRobloxMeshV1(String text,String ver){
+        String[] lines=text.split("\\R",3);
+        if(lines.length<3)return null;
+        int faces=Integer.parseInt(lines[1].trim());
+        Matcher m=Pattern.compile("\\[\\s*([^\\]]+)\\s*\\]").matcher(lines[2]);
+        List<double[]> vecs=new ArrayList<>();
+        while(m.find()){
+            String[] p=m.group(1).split(",");
+            if(p.length<3)continue;
+            vecs.add(new double[]{Double.parseDouble(p[0].trim()),Double.parseDouble(p[1].trim()),Double.parseDouble(p[2].trim())});
+        }
+        if(vecs.size()<faces*9)return null;
+        double scale="1.00".equals(ver)?0.5:1.0;
+        List<Vec3> outV=new ArrayList<>(faces*3),outN=new ArrayList<>(faces*3);
+        List<float[]> outUv=new ArrayList<>(faces*3);
+        for(int i=0;i<faces;i++){
+            int base=i*9;
+            for(int k=0;k<3;k++){
+                double[] pos=vecs.get(base+k*3),nrm=vecs.get(base+k*3+1),uv=vecs.get(base+k*3+2);
+                outV.add(new Vec3(pos[0]*scale,pos[1]*scale,pos[2]*scale));
+                outN.add(new Vec3(nrm[0],nrm[1],nrm[2]).normalized());
+                outUv.add(new float[]{(float)uv[0],(float)uv[1]});
+            }
+        }
+        return finishMesh(outV,outN,outUv);
+    }
+
+    private static OnlineMesh parseRobloxMeshBinary(byte[] data,int body,String ver){
+        ByteBuffer buf=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+        if(body<0||body>=data.length-4)return null;
+        buf.position(body);
+        int headerSize=Short.toUnsignedInt(buf.getShort());
+        if(headerSize<12||body+headerSize>data.length)return null;
+        int vertexSize,faceSize=12,lodCount=0,vertexCount,faceCount;
+        if(ver.startsWith("2.")){
+            vertexSize=Byte.toUnsignedInt(buf.get());
+            faceSize=Byte.toUnsignedInt(buf.get());
+            vertexCount=buf.getInt();
+            faceCount=buf.getInt();
+        }else if(ver.startsWith("3.")){
+            vertexSize=Byte.toUnsignedInt(buf.get());
+            faceSize=Byte.toUnsignedInt(buf.get());
+            buf.getShort(); // lodSize
+            lodCount=Short.toUnsignedInt(buf.getShort());
+            vertexCount=buf.getInt();
+            faceCount=buf.getInt();
+        }else{
+            // v4 / v5: skip extra header fields, vertices are 40 bytes.
+            buf.getShort(); // lodType
+            vertexCount=buf.getInt();
+            faceCount=buf.getInt();
+            lodCount=Short.toUnsignedInt(buf.getShort());
+            int boneCount=Short.toUnsignedInt(buf.getShort());
+            int nameTable=buf.getInt();
+            buf.getShort(); // subsets
+            buf.get(); buf.get();
+            if(ver.startsWith("5.")){buf.getInt();buf.getInt();}
+            vertexSize=40;
+            // envelopes sit between verts and faces when bones exist; handled below
+            buf.position(body+headerSize);
+            if(vertexCount<=0||faceCount<=0||vertexCount>2_000_000||faceCount>2_000_000)return null;
+            List<Vec3> verts=new ArrayList<>(vertexCount),norms=new ArrayList<>(vertexCount);
+            List<float[]> uvs=new ArrayList<>(vertexCount);
+            for(int i=0;i<vertexCount;i++){
+                int start=buf.position();
+                if(start+Math.max(vertexSize,36)>data.length)return null;
+                float px=buf.getFloat(),py=buf.getFloat(),pz=buf.getFloat();
+                float nx=buf.getFloat(),ny=buf.getFloat(),nz=buf.getFloat();
+                float u=buf.getFloat(),v=buf.getFloat();
+                verts.add(new Vec3(px,py,pz));
+                norms.add(new Vec3(nx,ny,nz).normalized());
+                uvs.add(new float[]{u,1f-v});
+                buf.position(start+vertexSize);
+            }
+            if(boneCount>0)buf.position(buf.position()+vertexCount*8);
+            return assembleIndexedMesh(buf,data,verts,norms,uvs,faceCount,faceSize,lodCount);
+        }
+        buf.position(body+headerSize);
+        if(vertexSize<36||faceSize<12||vertexCount<=0||faceCount<=0)return null;
+        if(vertexCount>2_000_000||faceCount>2_000_000)return null;
+        List<Vec3> verts=new ArrayList<>(vertexCount),norms=new ArrayList<>(vertexCount);
+        List<float[]> uvs=new ArrayList<>(vertexCount);
+        for(int i=0;i<vertexCount;i++){
+            int start=buf.position();
+            if(start+vertexSize>data.length)return null;
+            float px=buf.getFloat(),py=buf.getFloat(),pz=buf.getFloat();
+            float nx=buf.getFloat(),ny=buf.getFloat(),nz=buf.getFloat();
+            float u=buf.getFloat(),v=buf.getFloat();
+            verts.add(new Vec3(px,py,pz));
+            norms.add(new Vec3(nx,ny,nz).normalized());
+            uvs.add(new float[]{u,1f-v});
+            buf.position(start+vertexSize);
+        }
+        return assembleIndexedMesh(buf,data,verts,norms,uvs,faceCount,faceSize,lodCount);
+    }
+
+    private static OnlineMesh assembleIndexedMesh(ByteBuffer buf,byte[] data,
+            List<Vec3> verts,List<Vec3> norms,List<float[]> uvs,
+            int faceCount,int faceSize,int lodCount){
+        int[] lods=null;
+        int usedFaces=faceCount;
+        // Faces come before LOD offsets. Read faces first, then (optionally)
+        // shrink to the highest-detail LOD range.
+        int faceStart=buf.position();
+        if(lodCount>=2){
+            int afterFaces=faceStart+faceCount*faceSize;
+            if(afterFaces+lodCount*4<=data.length){
+                ByteBuffer lodBuf=ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+                lodBuf.position(afterFaces);
+                lods=new int[lodCount];
+                for(int i=0;i<lodCount;i++)lods[i]=lodBuf.getInt();
+                if(lods[0]==0 && lods[1]>0 && lods[1]<=faceCount)usedFaces=lods[1];
+            }
+        }
+        List<Vec3> outV=new ArrayList<>(usedFaces*3),outN=new ArrayList<>(usedFaces*3);
+        List<float[]> outUv=new ArrayList<>(usedFaces*3);
+        buf.position(faceStart);
+        for(int i=0;i<usedFaces;i++){
+            int start=buf.position();
+            if(start+12>data.length)return null;
+            int ia=buf.getInt(),ib=buf.getInt(),ic=buf.getInt();
+            if(ia<0||ib<0||ic<0||ia>=verts.size()||ib>=verts.size()||ic>=verts.size()){
+                buf.position(start+faceSize);
+                continue;
+            }
+            outV.add(verts.get(ia));outV.add(verts.get(ib));outV.add(verts.get(ic));
+            outN.add(norms.get(ia));outN.add(norms.get(ib));outN.add(norms.get(ic));
+            outUv.add(uvs.get(ia));outUv.add(uvs.get(ib));outUv.add(uvs.get(ic));
+            buf.position(start+faceSize);
+        }
+        return finishMesh(outV,outN,outUv);
+    }
+
+    private static OnlineMesh finishMesh(List<Vec3> outV,List<Vec3> outN,List<float[]> outUv){
+        if(outV.size()<3)return null;
+        double minX=Double.POSITIVE_INFINITY,minY=Double.POSITIVE_INFINITY,minZ=Double.POSITIVE_INFINITY;
+        double maxX=-Double.MAX_VALUE,maxY=-Double.MAX_VALUE,maxZ=-Double.MAX_VALUE;
+        for(Vec3 x:outV){
+            minX=Math.min(minX,x.x());minY=Math.min(minY,x.y());minZ=Math.min(minZ,x.z());
+            maxX=Math.max(maxX,x.x());maxY=Math.max(maxY,x.y());maxZ=Math.max(maxZ,x.z());
+        }
+        Vec3 half=new Vec3(Math.max((maxX-minX)*.5,1e-6),Math.max((maxY-minY)*.5,1e-6),Math.max((maxZ-minZ)*.5,1e-6));
+        return new OnlineMesh(outV.toArray(Vec3[]::new),outN.toArray(Vec3[]::new),outUv.toArray(float[][]::new),half);
+    }
+
     static OnlineMesh parseOnlineObj(String text){
+        if(text==null||text.isBlank())return null;
+        String trimmed=text.stripLeading();
+        if(trimmed.startsWith("version ")){
+            return parseMeshAsset(text.getBytes(StandardCharsets.ISO_8859_1));
+        }
         try{
             List<Vec3> v=new ArrayList<>(),n=new ArrayList<>();
             List<float[]> uv=new ArrayList<>(),outUv=new ArrayList<>();
@@ -934,25 +1392,26 @@ public final class RobloxPartRenderer {
                     }
                 }
             }
-            if(outV.size()<3)return null;
-            double minX=Double.POSITIVE_INFINITY,minY=Double.POSITIVE_INFINITY,minZ=Double.POSITIVE_INFINITY,maxX=-Double.MAX_VALUE,maxY=-Double.MAX_VALUE,maxZ=-Double.MAX_VALUE;
-            for(Vec3 x:outV){minX=Math.min(minX,x.x());minY=Math.min(minY,x.y());minZ=Math.min(minZ,x.z());maxX=Math.max(maxX,x.x());maxY=Math.max(maxY,x.y());maxZ=Math.max(maxZ,x.z());}
-            Vec3 center=new Vec3((minX+maxX)*.5,(minY+maxY)*.5,(minZ+maxZ)*.5),half=new Vec3(Math.max((maxX-minX)*.5,1e-6),Math.max((maxY-minY)*.5,1e-6),Math.max((maxZ-minZ)*.5,1e-6));
-            Vec3[] positions=new Vec3[outV.size()];
-            for(int i=0;i<outV.size();i++)positions[i]=outV.get(i).sub(center);
-            return new OnlineMesh(positions,outN.toArray(Vec3[]::new),outUv.toArray(float[][]::new),half);
+            return finishMesh(outV,outN,outUv);
         }catch(Throwable ignored){return null;}
     }
 
     private static void drawHead(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,int col){
-        if(HEAD_MESH==null)return;
+        if(HEAD_MESH==null){
+            Vec3 size=p.size(),scale=p.meshScale();
+            drawSphere(pose,b,p,col);
+            return;
+        }
         double headScale=0.5;
         double sx=headScale*(p.size().x()*p.meshScale().x())/Math.max(HEAD_MESH.half.x()*2.0,1e-9);
         double sy=headScale*(p.size().y()*p.meshScale().y())/Math.max(HEAD_MESH.half.y()*2.0,1e-9);
         double sz=headScale*(p.size().z()*p.meshScale().z())/Math.max(HEAD_MESH.half.z()*2.0,1e-9);
+        Vec3 off=p.meshOffset();
         for(int i=0;i<HEAD_MESH.positions.length;i+=3){
-            Vec3 a=HEAD_MESH.positions[i].mul(sx), bb=HEAD_MESH.positions[i+1].mul(sx), c=HEAD_MESH.positions[i+2].mul(sx);
-            a=new Vec3(a.x(),a.y()*sy,a.z()*sz);bb=new Vec3(bb.x(),bb.y()*sy,bb.z()*sz);c=new Vec3(c.x(),c.y()*sy,c.z()*sz);
+            Vec3 a=HEAD_MESH.positions[i], bb=HEAD_MESH.positions[i+1], c=HEAD_MESH.positions[i+2];
+            a=new Vec3(a.x()*sx+off.x(),a.y()*sy+off.y(),a.z()*sz+off.z());
+            bb=new Vec3(bb.x()*sx+off.x(),bb.y()*sy+off.y(),bb.z()*sz+off.z());
+            c=new Vec3(c.x()*sx+off.x(),c.y()*sy+off.y(),c.z()*sz+off.z());
             Vec3 na=HEAD_MESH.normals[i], nb=HEAD_MESH.normals[i+1], nc=HEAD_MESH.normals[i+2];
             float[] ua=HEAD_MESH.uvs[i], ub=HEAD_MESH.uvs[i+1], uc=HEAD_MESH.uvs[i+2];
             triangleSmooth(pose,b,p,a,bb,c,na,nb,nc,col,new float[]{ua[0],ua[1],ub[0],ub[1],uc[0],uc[1]});
@@ -980,10 +1439,11 @@ public final class RobloxPartRenderer {
 
                 Vec3 n00=sphereNormal(t0,p0), n10=sphereNormal(t1,p0);
                 Vec3 n11=sphereNormal(t1,p1), n01=sphereNormal(t0,p1);
-                Vec3 v00=new Vec3(hx*n00.x(),hy*n00.y(),hz*n00.z());
-                Vec3 v10=new Vec3(hx*n10.x(),hy*n10.y(),hz*n10.z());
-                Vec3 v11=new Vec3(hx*n11.x(),hy*n11.y(),hz*n11.z());
-                Vec3 v01=new Vec3(hx*n01.x(),hy*n01.y(),hz*n01.z());
+                Vec3 off=p.meshOffset();
+                Vec3 v00=new Vec3(hx*n00.x()+off.x(),hy*n00.y()+off.y(),hz*n00.z()+off.z());
+                Vec3 v10=new Vec3(hx*n10.x()+off.x(),hy*n10.y()+off.y(),hz*n10.z()+off.z());
+                Vec3 v11=new Vec3(hx*n11.x()+off.x(),hy*n11.y()+off.y(),hz*n11.z()+off.z());
+                Vec3 v01=new Vec3(hx*n01.x()+off.x(),hy*n01.y()+off.y(),hz*n01.z()+off.z());
 
                 float u0=(float)lon/longitudes, u1=(float)(lon+1)/longitudes;
                 float v0=(float)lat/latitudes, v1=(float)(lat+1)/latitudes;
@@ -999,6 +1459,58 @@ public final class RobloxPartRenderer {
     private static Vec3 sphereNormal(double latitude,double longitude){
         double c=Math.cos(latitude);
         return new Vec3(c*Math.cos(longitude),Math.sin(latitude),c*Math.sin(longitude));
+    }
+
+    /**
+     * SpecialMesh.Cylinder / CylinderMesh. Roblox cylinders run along local X,
+     * with Y/Z as the elliptical radii. CylinderMesh uses the smaller of Y/Z
+     * as a uniform radius; SpecialMesh.Cylinder keeps the part's Y and Z.
+     */
+    private static void drawCylinder(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,double hx,double hy,double hz,int color){
+        Vec3 off=p.meshOffset();
+        final int slices=20;
+        Vec3 right=new Vec3(1,0,0),left=new Vec3(-1,0,0);
+        Vec3 capPos=new Vec3(hx+off.x(),off.y(),off.z());
+        Vec3 capNeg=new Vec3(-hx+off.x(),off.y(),off.z());
+        for(int i=0;i<slices;i++){
+            double a0=2*Math.PI*i/slices,a1=2*Math.PI*(i+1)/slices;
+            double c0=Math.cos(a0),s0=Math.sin(a0),c1=Math.cos(a1),s1=Math.sin(a1);
+            Vec3 n0=new Vec3(0,c0,s0),n1=new Vec3(0,c1,s1);
+            Vec3 p0n=new Vec3(-hx+off.x(),hy*c0+off.y(),hz*s0+off.z());
+            Vec3 p0p=new Vec3( hx+off.x(),hy*c0+off.y(),hz*s0+off.z());
+            Vec3 p1n=new Vec3(-hx+off.x(),hy*c1+off.y(),hz*s1+off.z());
+            Vec3 p1p=new Vec3( hx+off.x(),hy*c1+off.y(),hz*s1+off.z());
+            float u0=(float)i/slices,u1=(float)(i+1)/slices;
+            triangleSmooth(pose,b,p,p0n,p1n,p1p,n0,n1,n1,color,new float[]{u0,0,u1,0,u1,1});
+            triangleSmooth(pose,b,p,p0n,p1p,p0p,n0,n1,n0,color,new float[]{u0,0,u1,1,u0,1});
+            triangle(pose,b,p,capPos,p0p,p1p,right,color,new float[]{0.5f,0.5f,(float)(0.5+0.5*c0),(float)(0.5+0.5*s0),(float)(0.5+0.5*c1),(float)(0.5+0.5*s1)});
+            triangle(pose,b,p,capNeg,p1n,p0n,left,color,new float[]{0.5f,0.5f,(float)(0.5+0.5*c1),(float)(0.5+0.5*s1),(float)(0.5+0.5*c0),(float)(0.5+0.5*s0)});
+        }
+    }
+
+    /**
+     * Classic SpecialMesh.Torso: a block whose left/right sides slope in so
+     * the top is narrower. Matches the 2010 built-in torso silhouette.
+     */
+    private static void drawTorso(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,double hx,double hy,double hz,int color){
+        Vec3 off=p.meshOffset();
+        double top=0.5;
+        Vec3 a=new Vec3(-hx+off.x(),-hy+off.y(),-hz+off.z());
+        Vec3 bb=new Vec3( hx+off.x(),-hy+off.y(),-hz+off.z());
+        Vec3 c=new Vec3( hx+off.x(),-hy+off.y(), hz+off.z());
+        Vec3 d=new Vec3(-hx+off.x(),-hy+off.y(), hz+off.z());
+        Vec3 e=new Vec3(-hx*top+off.x(), hy+off.y(),-hz+off.z());
+        Vec3 f=new Vec3( hx*top+off.x(), hy+off.y(),-hz+off.z());
+        Vec3 g=new Vec3( hx*top+off.x(), hy+off.y(), hz+off.z());
+        Vec3 h=new Vec3(-hx*top+off.x(), hy+off.y(), hz+off.z());
+        face(pose,b,p,a,bb,c,d,0,-1,0,color);
+        face(pose,b,p,e,f,g,h,0,1,0,color);
+        face(pose,b,p,a,bb,f,e,0,0,-1,color);
+        face(pose,b,p,d,c,g,h,0,0,1,color);
+        triangleFace(pose,b,p,a,e,h,new Vec3(-1,hx-hx*top,0),color);
+        triangleFace(pose,b,p,a,h,d,new Vec3(-1,hx-hx*top,0),color);
+        triangleFace(pose,b,p,bb,c,g,new Vec3(1,hx-hx*top,0),color);
+        triangleFace(pose,b,p,bb,g,f,new Vec3(1,hx-hx*top,0),color);
     }
 
     private static void triangleSmooth(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,Vec3 a,Vec3 bb,Vec3 c,Vec3 na,Vec3 nb,Vec3 nc,int color,float[] uvs){
@@ -1206,34 +1718,11 @@ public final class RobloxPartRenderer {
         float uTex=(float)(edgeU.length()/tileStuds);
         float vTex=(float)(edgeV.length()/tileStuds);
 
-        // A projected stencil shadow has a hard boundary somewhere inside the
-        // receiver face. A single quad only evaluates lighting at four corners,
-        // which made a whole wall/floor miss the shadow whenever its corners were
-        // outside the caster silhouette. Subdivide ONLY receivers that actually
-        // have cached shadows. Four-by-four is enough for the old blocky 2010
-        // look while avoiding the huge tessellation cost of subdividing every
-        // Roblox face. Eight-by-eight keeps the hard boundary much closer to the
-        // actual projected stencil silhouette without returning to black overlay
-        // polygons.
-        List<ShadowTriangle> shadowTris=SHADOWS_BY_RECEIVER.get(p);
-        if(shadowTris==null || shadowTris.isEmpty() || p.transparency()>=0.999){
-            emitFaceQuad(pose,b,p,a,bb,c,d,n,color,0f,uTex,0f,vTex);
-            return;
-        }
-        final int cells=8;
-        for(int iy=0;iy<cells;iy++){
-            double v0=(double)iy/cells, v1=(double)(iy+1)/cells;
-            Vec3 left0=lerp(a,d,v0), right0=lerp(bb,c,v0);
-            Vec3 left1=lerp(a,d,v1), right1=lerp(bb,c,v1);
-            for(int ix=0;ix<cells;ix++){
-                double u0=(double)ix/cells, u1=(double)(ix+1)/cells;
-                Vec3 p00=lerp(left0,right0,u0), p10=lerp(left0,right0,u1);
-                Vec3 p11=lerp(left1,right1,u1), p01=lerp(left1,right1,u0);
-                emitFaceQuad(pose,b,p,p00,p10,p11,p01,n,color,
-                        (float)(u0*uTex),(float)(u1*uTex),
-                        (float)((1.0-v0)*vTex),(float)((1.0-v1)*vTex));
-            }
-        }
+        // Always draw the full face lit. A tiny caster on a huge receiver must
+        // never darken the whole quad. The exact projected silhouette is stamped
+        // on top as a few extra triangles.
+        emitFaceQuad(pose,b,p,a,bb,c,d,n,color,0f,uTex,0f,vTex);
+        stampFaceShadows(pose,b,p,a,bb,d,n,color,tileStuds);
     }
 
     private static Vec3 lerp(Vec3 a,Vec3 b,double t){
@@ -1252,14 +1741,54 @@ public final class RobloxPartRenderer {
         // vertices were shaded independently, a boundary crossing a cell would
         // create a diagonal half-triangle, which is exactly the artifact we are
         // trying to avoid.
-        Vec3 cellCenter=world(p,lerp(lerp(a,d,0.5),lerp(bb,c,0.5),0.5));
-        double cellShadow=shadowMask(p,cellCenter,n);
-        vertexWithShadow(pose,b,wa,ra,u0,v1,n,p,cellShadow);
-        vertexWithShadow(pose,b,wb,rb,u1,v1,n,p,cellShadow);
-        vertexWithShadow(pose,b,wc,rc,u1,v0,n,p,cellShadow);
-        vertexWithShadow(pose,b,wc,rc,u1,v0,n,p,cellShadow);
-        vertexWithShadow(pose,b,wd,rd,u0,v0,n,p,cellShadow);
-        vertexWithShadow(pose,b,wa,ra,u0,v1,n,p,cellShadow);
+        vertexWithShadow(pose,b,wa,ra,u0,v1,n,p,1.0);
+        vertexWithShadow(pose,b,wb,rb,u1,v1,n,p,1.0);
+        vertexWithShadow(pose,b,wc,rc,u1,v0,n,p,1.0);
+        vertexWithShadow(pose,b,wc,rc,u1,v0,n,p,1.0);
+        vertexWithShadow(pose,b,wd,rd,u0,v0,n,p,1.0);
+        vertexWithShadow(pose,b,wa,ra,u0,v1,n,p,1.0);
+    }
+
+    private static void stampFaceShadows(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,
+                                         Vec3 localA,Vec3 localB,Vec3 localD,Vec3 faceNormal,int color,double tileStuds){
+        if(p.transparency()>=0.999)return;
+        List<ShadowTriangle> tris=SHADOWS_BY_RECEIVER.get(p);
+        if(tris==null||tris.isEmpty())return;
+        Vec3 n=faceNormal.normalized();
+        Vec3 origin=p.cframe().transformPoint(localA);
+        Vec3 axisU=p.cframe().transformVector(localB.sub(localA));
+        Vec3 axisV=p.cframe().transformVector(localD.sub(localA));
+        double uLen=axisU.length(), vLen=axisV.length();
+        if(uLen<1e-8||vLen<1e-8)return;
+        Vec3 uDir=axisU.mul(1.0/uLen), vDir=axisV.mul(1.0/vLen);
+        double shadow=shadowLightMultiplier();
+        for(int i=0,count=tris.size();i<count;i++){
+            ShadowTriangle t=tris.get(i);
+            if(t.normal().normalized().dot(n)<0.95)continue;
+            if(Math.abs(t.center().sub(origin).dot(n))>0.12)continue;
+            emitShadowStamp(pose,b,p,t.a(),t.b(),t.c(),n,origin,uDir,vDir,tileStuds,color,shadow);
+        }
+    }
+
+    private static void emitShadowStamp(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,
+                                        Vec3 a,Vec3 bb,Vec3 c,Vec3 n,Vec3 origin,Vec3 uDir,Vec3 vDir,
+                                        double tileStuds,int color,double shadow){
+        Vec3 wa=worldPosition(a),wb=worldPosition(bb),wc=worldPosition(c);
+        int ra=reflect(color,p.reflectance(),wa,n),rb=reflect(color,p.reflectance(),wb,n),rc=reflect(color,p.reflectance(),wc,n);
+        float[] ua=faceUv(a,origin,uDir,vDir,tileStuds);
+        float[] ub=faceUv(bb,origin,uDir,vDir,tileStuds);
+        float[] uc=faceUv(c,origin,uDir,vDir,tileStuds);
+        vertexWithShadow(pose,b,wa,ra,ua[0],ua[1],n,p,shadow);
+        vertexWithShadow(pose,b,wb,rb,ub[0],ub[1],n,p,shadow);
+        vertexWithShadow(pose,b,wc,rc,uc[0],uc[1],n,p,shadow);
+        vertexWithShadow(pose,b,wc,rc,uc[0],uc[1],n,p,shadow);
+        vertexWithShadow(pose,b,wb,rb,ub[0],ub[1],n,p,shadow);
+        vertexWithShadow(pose,b,wa,ra,ua[0],ua[1],n,p,shadow);
+    }
+
+    private static float[] faceUv(Vec3 robloxPoint,Vec3 origin,Vec3 uDir,Vec3 vDir,double tileStuds){
+        Vec3 rel=robloxPoint.sub(origin);
+        return new float[]{(float)(rel.dot(uDir)/tileStuds),(float)(1.0-rel.dot(vDir)/tileStuds)};
     }
     private static Vec3 world(RobloxPart p,Vec3 local){return worldPosition(p.cframe().transformPoint(local));}
     private static Vec3 worldPosition(Vec3 roblox){return new Vec3(
@@ -1274,23 +1803,38 @@ public final class RobloxPartRenderer {
         Vec3 normal=n.normalized();
         double ndl=Math.max(0,normal.dot(CURRENT_SUN));
         double shadow=Double.isNaN(forcedShadow)?shadowMask(part,v,normal):forcedShadow;
-        // Fake the old stencil result in the level's own shading path: ambient
-        // light remains, while only the direct sun term is suppressed.
+        // Ambient stays; only the direct sun term is killed inside a projected shadow.
         double diffuse=CURRENT_LIGHTING.ambientFactor()+CURRENT_LIGHTING.sunFactor()*ndl*shadow;
         double specular=0.0;
         Vec3 view=new Vec3(CURRENT_CAMERA.x()-v.x(),CURRENT_CAMERA.y()-v.y(),CURRENT_CAMERA.z()-v.z()).normalized();
         Vec3 half=CURRENT_SUN.add(view).normalized();
-        if(ndl>0&&half.lengthSquared()>1e-9){
+        if(ndl>0&&shadow>0.001&&half.lengthSquared()>1e-9){
             double exponent=materialSpecularExponent(part);
             specular=materialSpecularStrength(part)*Math.pow(Math.max(0,normal.dot(half)),exponent);
             specular*=0.25+0.75*Math.max(0.0,Math.min(1.0,CURRENT_LIGHTING.environmentSpecularScale()));
+            specular*=shadow;
         }
         int shaded=shadeSpecular(c,diffuse,specular);
         shaded=applyEnvironmentLighting(shaded,part,normal,ndl,v);
         b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor((shaded>>16)&255,(shaded>>8)&255,shaded&255,(shaded>>>24)&255).setUv(u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());
     }
+    private static Vec3 minecraftToRoblox(Vec3 mc){
+        return new Vec3(
+            RobloxCoordinateSpace.toRoblox(mc.x()-SCENE_ORIGIN.x()),
+            RobloxCoordinateSpace.toRoblox(mc.y()-SCENE_ORIGIN.y()),
+            RobloxCoordinateSpace.toRoblox(mc.z()-SCENE_ORIGIN.z()));
+    }
     private static double shadowMask(RobloxPart receiver,Vec3 minecraftPoint,Vec3 worldNormal){
-        // TEMPORARILY DISABLED: custom Roblox shadows are too expensive right now.
+        if(receiver==null||CURRENT_LIGHTING==null||CURRENT_LIGHTING.sunFactor()<=0.001)return 1.0;
+        List<ShadowTriangle> tris=SHADOWS_BY_RECEIVER.get(receiver);
+        if(tris==null||tris.isEmpty())return 1.0;
+        Vec3 p=minecraftToRoblox(minecraftPoint);
+        for(int i=0,n=tris.size();i<n;i++){
+            ShadowTriangle t=tris.get(i);
+            double r=t.radius()+0.15;
+            if(p.sub(t.center()).lengthSquared()>r*r)continue;
+            if(pointInShadowTriangle(p,t))return shadowLightMultiplier();
+        }
         return 1.0;
     }
 
@@ -1319,6 +1863,14 @@ public final class RobloxPartRenderer {
             if(t>=0.01 && t<casterDistance-0.02)return true;
         }
         return false;
+    }
+
+    private static boolean shadowTriangleFullyOccluded(RobloxPart caster,Vec3 a,Vec3 b,Vec3 c,Vec3 normal){
+        Vec3 center=a.add(b).add(c).mul(1.0/3.0);
+        return shadowRayOccluded(caster,a,normal)
+            && shadowRayOccluded(caster,b,normal)
+            && shadowRayOccluded(caster,c,normal)
+            && shadowRayOccluded(caster,center,normal);
     }
 
     private static double rayBoxHitDistance(Vec3 origin,Vec3 dir,RobloxPart part){
