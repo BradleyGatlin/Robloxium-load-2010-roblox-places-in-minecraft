@@ -10,16 +10,9 @@
 
 
 
-This build intentionally replaces the previous Alpha 1.x/2.x coordinate and player architecture.
 
 Core Architecture
 
-Robloxium's guest runtime uses Roblox studs internally. Conversion to Minecraft blocks happens only at the host bridge boundary.
-
-CFrame rotations are never scaled.
-Part sizes are never scaled inside the guest runtime.
-Roblox and Minecraft coordinate systems remain separate until the bridge converts between them.
-Runtime
 RobloxGame / DataModel / Workspace — implemented
 R6 Character + Humanoid + Motor6D — infrastructure exists; currently intended for future NPC support
 RBXLX/XML typed property loader — implemented
