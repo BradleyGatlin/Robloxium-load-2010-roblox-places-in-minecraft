@@ -29,7 +29,7 @@ import java.util.Set;
  * part transform for visuals.
  */
 final class RobloxPlayerCollision {
-    private static final double MAX_DISTANCE_STUDS = 96.0;
+    private static final double MAX_DISTANCE_STUDS = 1096.0;
     private static final double EPS = 0.003;
     private static final double CONTACT_EPS = 0.08;
     // Legacy Roblox characters can walk up small Part steps instead of
