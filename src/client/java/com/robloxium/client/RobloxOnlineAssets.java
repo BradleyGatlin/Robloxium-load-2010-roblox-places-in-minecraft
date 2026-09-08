@@ -1,48 +1,237 @@
-private static CompletableFuture<Identifier> downloadTexture(String url){
-    return CompletableFuture.supplyAsync(()->{
-        try{
-            HttpRequest req=HttpRequest.newBuilder(URI.create(url))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("User-Agent","Robloxium/3.0 (2010 compatibility renderer)")
-                    .GET()
-                    .build();
+package com.robloxium.client;
 
-            HttpResponse<InputStream> response=
-                    HTTP.send(req,HttpResponse.BodyHandlers.ofInputStream());
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.resources.Identifier;
 
-            if(response.statusCode()<200||response.statusCode()>=300)return null;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
 
-            NativeImage image;
-            try(InputStream in=response.body()){
-                image=NativeImage.read(in);
-            }
+/** Client-side cache for legacy Roblox assets referenced by HTTP URLs. */
+final class RobloxOnlineAssets {
 
-            // Roblox legacy textures are vertically oriented differently
-            // from Minecraft's texture coordinate convention.
-            // I think so because they render wrong when its not flipped idk.
-            image.flipY();
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(8))
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
 
-            DynamicTexture texture=new DynamicTexture(()->url,image);
-
-            CompletableFuture<Identifier> out=new CompletableFuture<>();
-
-            Minecraft.getInstance().execute(()->{
-                try{
-                    out.complete(registerTexture("robloxium_online",texture));
-                }catch(Throwable t){
-                    try{texture.close();}catch(Throwable ignored){}
-                    out.complete(null);
-                }
+    private static final ExecutorService IO =
+            Executors.newFixedThreadPool(3, r -> {
+                Thread t = new Thread(r, "Robloxium-AssetDownload");
+                t.setDaemon(true);
+                return t;
             });
 
-            return out.join();
+    private static final Map<String, CompletableFuture<Identifier>> TEXTURES =
+            new ConcurrentHashMap<>();
 
-        }catch(Throwable ignored){
-            return null;
+    private static final Map<String, CompletableFuture<RobloxPartRenderer.OnlineMesh>> MESHES =
+            new ConcurrentHashMap<>();
+
+    private RobloxOnlineAssets() {
+    }
+
+    static String resolveUrl(String id) {
+        if (id == null) return null;
+
+        String s = id.trim();
+        if (s.isEmpty()) return null;
+
+        if (s.regionMatches(true, 0, "http://", 0, 7)
+                || s.regionMatches(true, 0, "https://", 0, 8)) {
+            return s;
         }
-    },IO).thenCompose(v->
-            v==null
-                    ? CompletableFuture.completedFuture(null)
-                    : CompletableFuture.completedFuture(v)
-    );
+
+        if (s.regionMatches(true, 0, "rbxassetid://", 0, 13)) {
+            String n = s.substring(13).replaceAll("[^0-9]", "");
+
+            if (!n.isEmpty()) {
+                return "http://www.nostro.lol/asset/catalog/" + n + ".png";
+            }
+        }
+
+        return null;
+    }
+
+    static Identifier texture(String id) {
+        String url = resolveUrl(id);
+        if (url == null) return null;
+
+        CompletableFuture<Identifier> f =
+                TEXTURES.computeIfAbsent(url, RobloxOnlineAssets::downloadTexture);
+
+        return f.getNow(null);
+    }
+
+    private static Identifier registerTexture(
+            String prefix,
+            DynamicTexture texture
+    ) {
+        Identifier id = Identifier.fromNamespaceAndPath(
+                "robloxium",
+                prefix + "_" + Integer.toHexString(
+                        System.identityHashCode(texture)
+                )
+        );
+
+        // The Robloxium render sampler requests mipmapping;
+        // upload the image once.
+        // The texture identifier is cached afterwards,
+        // so this is not repeated every frame.
+        texture.upload();
+
+        Minecraft.getInstance()
+                .getTextureManager()
+                .register(id, texture);
+
+        return id;
+    }
+
+    private static CompletableFuture<Identifier> downloadTexture(String url) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                HttpRequest req = HttpRequest.newBuilder(
+                                URI.create(url)
+                        )
+                        .timeout(Duration.ofSeconds(15))
+                        .header(
+                                "User-Agent",
+                                "Robloxium/3.0 (2010 compatibility renderer)"
+                        )
+                        .GET()
+                        .build();
+
+                HttpResponse<InputStream> response =
+                        HTTP.send(
+                                req,
+                                HttpResponse.BodyHandlers.ofInputStream()
+                        );
+
+                if (response.statusCode() < 200
+                        || response.statusCode() >= 300) {
+                    return null;
+                }
+
+                NativeImage image;
+
+                try (InputStream in = response.body()) {
+                    image = NativeImage.read(in);
+                }
+
+                // Roblox legacy textures are vertically oriented
+                // differently from Minecraft's texture coordinate convention.
+                image.flipY();
+
+                DynamicTexture texture =
+                        new DynamicTexture(() -> url, image);
+
+                CompletableFuture<Identifier> out =
+                        new CompletableFuture<>();
+
+                Minecraft.getInstance().execute(() -> {
+                    try {
+                        out.complete(
+                                registerTexture(
+                                        "robloxium_online",
+                                        texture
+                                )
+                        );
+                    } catch (Throwable t) {
+                        try {
+                            texture.close();
+                        } catch (Throwable ignored) {
+                        }
+
+                        out.complete(null);
+                    }
+                });
+
+                return out.join();
+
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }, IO).thenCompose(v ->
+                v == null
+                        ? CompletableFuture.completedFuture(null)
+                        : CompletableFuture.completedFuture(v)
+        );
+    }
+
+    static RobloxPartRenderer.OnlineMesh mesh(String id) {
+        String url = resolveMeshUrl(id);
+        if (url == null) return null;
+
+        return MESHES
+                .computeIfAbsent(url, RobloxOnlineAssets::downloadMesh)
+                .getNow(null);
+    }
+
+    private static String resolveMeshUrl(String id) {
+        if (id == null) return null;
+
+        String s = id.trim();
+        if (s.isEmpty()) return null;
+
+        if (s.regionMatches(true, 0, "http://", 0, 7)
+                || s.regionMatches(true, 0, "https://", 0, 8)) {
+            return s;
+        }
+
+        if (s.regionMatches(true, 0, "rbxassetid://", 0, 13)) {
+            String n = s.substring(13).replaceAll("[^0-9]", "");
+
+            if (!n.isEmpty()) {
+                return "http://www.nostro.lol/asset/catalog/" + n + ".obj";
+            }
+        }
+
+        return null;
+    }
+
+    private static CompletableFuture<RobloxPartRenderer.OnlineMesh> downloadMesh(
+            String url
+    ) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                HttpRequest req = HttpRequest.newBuilder(
+                                URI.create(url)
+                        )
+                        .timeout(Duration.ofSeconds(20))
+                        .header(
+                                "User-Agent",
+                                "Robloxium/3.0 (2010 compatibility renderer)"
+                        )
+                        .GET()
+                        .build();
+
+                HttpResponse<String> response =
+                        HTTP.send(
+                                req,
+                                HttpResponse.BodyHandlers.ofString()
+                        );
+
+                if (response.statusCode() < 200
+                        || response.statusCode() >= 300) {
+                    return null;
+                }
+
+                return RobloxPartRenderer.parseOnlineObj(
+                        response.body()
+                );
+
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }, IO);
+    }
 }
