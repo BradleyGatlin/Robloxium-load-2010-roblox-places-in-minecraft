@@ -11,10 +11,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Client-side cache for legacy Roblox assets referenced by HTTP URLs. */
 final class RobloxOnlineAssets {
@@ -41,10 +42,15 @@ final class RobloxOnlineAssets {
     }
 
     static String resolveUrl(String id) {
-        if (id == null) return null;
+        if (id == null) {
+            return null;
+        }
 
         String s = id.trim();
-        if (s.isEmpty()) return null;
+
+        if (s.isEmpty()) {
+            return null;
+        }
 
         if (s.regionMatches(true, 0, "http://", 0, 7)
                 || s.regionMatches(true, 0, "https://", 0, 8)) {
@@ -64,10 +70,16 @@ final class RobloxOnlineAssets {
 
     static Identifier texture(String id) {
         String url = resolveUrl(id);
-        if (url == null) return null;
+
+        if (url == null) {
+            return null;
+        }
 
         CompletableFuture<Identifier> f =
-                TEXTURES.computeIfAbsent(url, RobloxOnlineAssets::downloadTexture);
+                TEXTURES.computeIfAbsent(
+                        url,
+                        RobloxOnlineAssets::downloadTexture
+                );
 
         return f.getNow(null);
     }
@@ -83,10 +95,11 @@ final class RobloxOnlineAssets {
                 )
         );
 
-        // The Robloxium render sampler requests mipmapping;
-        // upload the image once.
-        // The texture identifier is cached afterwards,
-        // so this is not repeated every frame.
+        /*
+         * Upload the texture once.
+         * The identifier is cached afterward, so this isn't repeated
+         * every frame.
+         */
         texture.upload();
 
         Minecraft.getInstance()
@@ -96,12 +109,35 @@ final class RobloxOnlineAssets {
         return id;
     }
 
+    /**
+     * Flips a NativeImage vertically.
+     *
+     * NativeImage in this Minecraft version does not provide flipY(),
+     * so perform the operation manually.
+     */
+    private static void flipImageVertically(NativeImage image) {
+        int width = image.getWidth();
+        int height = image.getHeight();
+
+        for (int y = 0; y < height / 2; y++) {
+            int oppositeY = height - 1 - y;
+
+            for (int x = 0; x < width; x++) {
+                int top = image.getPixel(x, y);
+                int bottom = image.getPixel(x, oppositeY);
+
+                image.setPixel(x, y, bottom);
+                image.setPixel(x, oppositeY, top);
+            }
+        }
+    }
+
     private static CompletableFuture<Identifier> downloadTexture(String url) {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 HttpRequest req = HttpRequest.newBuilder(
-                                URI.create(url)
-                        )
+                        URI.create(url)
+                )
                         .timeout(Duration.ofSeconds(15))
                         .header(
                                 "User-Agent",
@@ -127,9 +163,11 @@ final class RobloxOnlineAssets {
                     image = NativeImage.read(in);
                 }
 
-                // Roblox legacy textures are vertically oriented
-                // differently from Minecraft's texture coordinate convention.
-                image.flipY();
+                /*
+                 * Legacy Roblox textures need to be vertically flipped
+                 * for the way Robloxium maps them onto Minecraft geometry.
+                 */
+                flipImageVertically(image);
 
                 DynamicTexture texture =
                         new DynamicTexture(() -> url, image);
@@ -169,18 +207,29 @@ final class RobloxOnlineAssets {
 
     static RobloxPartRenderer.OnlineMesh mesh(String id) {
         String url = resolveMeshUrl(id);
-        if (url == null) return null;
+
+        if (url == null) {
+            return null;
+        }
 
         return MESHES
-                .computeIfAbsent(url, RobloxOnlineAssets::downloadMesh)
+                .computeIfAbsent(
+                        url,
+                        RobloxOnlineAssets::downloadMesh
+                )
                 .getNow(null);
     }
 
     private static String resolveMeshUrl(String id) {
-        if (id == null) return null;
+        if (id == null) {
+            return null;
+        }
 
         String s = id.trim();
-        if (s.isEmpty()) return null;
+
+        if (s.isEmpty()) {
+            return null;
+        }
 
         if (s.regionMatches(true, 0, "http://", 0, 7)
                 || s.regionMatches(true, 0, "https://", 0, 8)) {
@@ -204,8 +253,8 @@ final class RobloxOnlineAssets {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 HttpRequest req = HttpRequest.newBuilder(
-                                URI.create(url)
-                        )
+                        URI.create(url)
+                )
                         .timeout(Duration.ofSeconds(20))
                         .header(
                                 "User-Agent",
