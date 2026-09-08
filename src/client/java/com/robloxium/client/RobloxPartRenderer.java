@@ -40,46 +40,27 @@ import javax.imageio.ImageIO;
 import java.util.*;
 import java.util.regex.*;
 
-/**
- * Rewritten geometry renderer.
- *
- * IMPORTANT: Part geometry is generated in Roblox studs, transformed by the
- * Roblox CFrame, and only then converted to Minecraft blocks. No local axis,
- * size, CFrame or rotation is scaled independently.
- */
 public final class RobloxPartRenderer {
     private static final int LIGHT=0x00F000F0;
     private static final double MATERIAL_TILE_STUDS=6.0;
-    // The 2010 client uses the same physical material tiling convention, but
-    // the legacy Grass/Concrete source maps carry a denser authored pattern.
-    // Compensate their source-map density so their visible pattern matches the
-    // established 6-stud scale used by the other legacy material maps.
+
     private static double materialTileStuds(RobloxPart p){
         return switch(p.material()){
-            case 816 -> 4.0; // Concrete: 1.5x UV density
+            case 816 -> 4.0;
             default -> MATERIAL_TILE_STUDS;
         };
     }
-    // Legacy Texture objects and the built-in 2010 material UVs are tiled in
-    // stud space. Minecraft samplers may clamp the UVs, so wrap them ourselves
-    // instead of relying on the backend sampler state.
+
     private static final double SURFACE_TILE_STUDS=3.0;
     private static final Map<Identifier,RenderType> REPEAT_TEXTURE_TYPES=new HashMap<>();
     private static final String SURFACE_STUDS="textures/2010/materials/surface_studs.png";
     private static final String SURFACE_INLET="textures/2010/materials/surface_inlet.png";
     private static final String SURFACE_UNIVERSAL="textures/2010/materials/surface_universal.png";
-    // Far parts use the cheap closed cube path. 100 Roblox studs is close enough
-    // that the silhouette/detail difference is not useful at normal viewing
-    // distance, while avoiding expensive curved/mesh detail for distant parts.
+
     private static final double DETAIL_DISTANCE_STUDS=100.0;
-    // Environment map used by Roblox Reflectance. The six bundled 2010 skybox
-    // images are sampled as a real cubemap instead of tinting parts toward a
-    // hard-coded blue. This makes metal/foil/reflective parts respond to the
-    // actual place sky and to the camera/view direction.
+
     private static final SkyEnvironment SKY_ENVIRONMENT=SkyEnvironment.load();
-    // Shadows have no camera, preparation, or projection-distance limit.
-    // Transparency and the Part's CastShadow state are the only caster-side
-    // eligibility rules.
+
     private static final String WHITE="textures/2010/materials/blank.png";
     private static final String FACE="textures/2010/face.png";
     private static final String[] SKY={"textures/2010/sky/rt.png","textures/2010/sky/lf.png","textures/2010/sky/up.png","textures/2010/sky/dn.png","textures/2010/sky/ft.png","textures/2010/sky/bk.png"};
@@ -111,27 +92,17 @@ public final class RobloxPartRenderer {
     private static Vec3 CURRENT_SUN=new Vec3(-.35,.82,-.45).normalized();
     private static net.minecraft.world.phys.Vec3 CURRENT_CAMERA=net.minecraft.world.phys.Vec3.ZERO;
     private static Vec3 CURRENT_ROBLOX_CAMERA=Vec3.ZERO;
-    // Roblox coordinates are anchored into the already-open Minecraft world.
-    // This is deliberately a render-space offset; no Minecraft dimension or
-    // world-generation data is created or modified.
+
     private static net.minecraft.world.phys.Vec3 SCENE_ORIGIN=net.minecraft.world.phys.Vec3.ZERO;
-    // Temporary shadow cache: shadows are expensive to calculate, so build the
-    // shadow mesh once when a place is loaded and only rewrite the cached
-    // triangles during rendering. This intentionally does not update when the
-    // sun/parts move; it is a performance-first temporary solution.
+
     private static final List<ShadowTriangle> SHADOW_CACHE=new ArrayList<>();
     private static final Map<RobloxPart,List<ShadowTriangle>> SHADOWS_BY_RECEIVER=new IdentityHashMap<>();
     private static List<RobloxPart> CURRENT_SHADOW_PARTS=List.of();
-    // Shadow direction is ALWAYS derived from the loaded Roblox Lighting
-    // service. Minecraft's dimension sun/sky is never consulted.
+
     private static boolean shadowCacheValid;
     private static long shadowCacheSignature;
     private static boolean registered;
-    /**
-     * Robloxium 2010 rendering is intentionally Vulkan-only. Minecraft 26.2
-     * exposes the active GPU backend through Blaze3D, so we can enforce the
-     * contract without touching either OpenGL or Vulkan implementation classes.
-     */
+
     private static final String VULKAN_BACKEND_NAME="vulkan";
     private static Boolean IRIS_PRESENT;
     private static boolean irisPresent(){
@@ -156,8 +127,7 @@ public final class RobloxPartRenderer {
         }
     }
     private static void requireVulkanBackend(){
-        // Iris 26.2 is OpenGL-only. Forcing Vulkan here would crash or
-        // prevent any Roblox geometry from entering the Iris gbuffer pass.
+
         if(irisPresent())return;
         String backend;
         try{
@@ -198,8 +168,7 @@ public final class RobloxPartRenderer {
     private RobloxPartRenderer(){}
     public static void register(){
         if(registered)return;
-        // GPU initialization happens after the Fabric client entrypoint.
-        // Backend enforcement therefore belongs in the render callback, not here.
+
         registered=true;
         LevelRenderEvents.COLLECT_SUBMITS.register(ctx->{
             RobloxGame g=RobloxiumClient.HOST.game();
@@ -217,14 +186,7 @@ public final class RobloxPartRenderer {
             SubmitNodeCollector c=ctx.submitNodeCollector();
             ps.pushPose();
             ps.translate(-cam.x(),-cam.y(),-cam.z());
-            // The Roblox place sky is intentionally disabled for screenshot/debug builds.
-            // Keep the sky textures loaded for CPU environment lighting/specular, but do not
-            // submit the six sky faces to the Minecraft world renderer.
-            // Build the receiver-local shadow mask BEFORE emitting the Roblox
-            // geometry. The previous version did this after drawParts(), so the
-            // first rendered frame could never use the freshly-built cache.
-            // Hard shadows are baked into vertex colour on receiver faces.
-            // Rebuild only when lighting or nearby parts actually changed.
+
             long signature=shadowSignature(g);
             if(!shadowCacheValid || signature!=shadowCacheSignature) rebuildShadowCache(g);
             drawParts(c,ps,g.workspace().parts(),cam,false);
@@ -278,7 +240,6 @@ public final class RobloxPartRenderer {
     }
     private static long mix(long h,long v){h^=v;return h*1099511628211L;}
 
-    /** Build the expensive shadow geometry once for the current Roblox place. */
     public static void rebuildShadowCache(RobloxGame game){
         SHADOW_CACHE.clear();
         SHADOWS_BY_RECEIVER.clear();
@@ -316,12 +277,7 @@ public final class RobloxPartRenderer {
     }
 
     private static void drawSkybox(SubmitNodeCollector c,PoseStack ps,net.minecraft.world.phys.Vec3 cam){
-        // Roblox's 2010 client renders its six sky faces as the environment
-        // rather than blending them with the host world's sky. The vanilla
-        // sky is cancelled by RobloxSkyRendererMixin; this cube therefore owns
-        // every pixel that is not occupied by Minecraft/Roblox geometry.
-        // Keep the 2010-style environment compact: one Minecraft chunk (16x16).
-        // The sky depth test below makes it a background instead of an overlay.
+
         double r=8.0;
         for(int i=0;i<SKY.length;i++){
             Identifier texture=tex(SKY[i]);
@@ -332,17 +288,9 @@ public final class RobloxPartRenderer {
     private static void skyFace(PoseStack.Pose pose,VertexConsumer b,int face,double r,net.minecraft.world.phys.Vec3 cam){Vec3 o=new Vec3(cam.x(),cam.y(),cam.z()),a,bb,c,d;switch(face){case 0-> {a=o.add(new Vec3(r,-r,-r));bb=o.add(new Vec3(r,-r,r));c=o.add(new Vec3(r,r,r));d=o.add(new Vec3(r,r,-r));}case 1->{a=o.add(new Vec3(-r,-r,r));bb=o.add(new Vec3(-r,-r,-r));c=o.add(new Vec3(-r,r,-r));d=o.add(new Vec3(-r,r,r));}case 2->{a=o.add(new Vec3(-r,r,r));bb=o.add(new Vec3(r,r,r));c=o.add(new Vec3(r,r,-r));d=o.add(new Vec3(-r,r,-r));}case 3->{a=o.add(new Vec3(-r,-r,-r));bb=o.add(new Vec3(r,-r,-r));c=o.add(new Vec3(r,-r,r));d=o.add(new Vec3(-r,-r,r));}case 4->{a=o.add(new Vec3(-r,-r,r));bb=o.add(new Vec3(r,-r,r));c=o.add(new Vec3(r,r,r));d=o.add(new Vec3(-r,r,r));}default->{a=o.add(new Vec3(r,-r,-r));bb=o.add(new Vec3(-r,-r,-r));c=o.add(new Vec3(-r,r,-r));d=o.add(new Vec3(r,r,-r));}}
         Vec3 normal=switch(face){case 0->new Vec3(-1,0,0);case 1->new Vec3(1,0,0);case 2->new Vec3(0,-1,0);case 3->new Vec3(0,1,0);case 4->new Vec3(0,0,-1);default->new Vec3(0,0,1);};skyVertex(pose,b,d,0,0,normal);skyVertex(pose,b,c,1,0,normal);skyVertex(pose,b,bb,1,1,normal);skyVertex(pose,b,bb,1,1,normal);skyVertex(pose,b,a,0,1,normal);skyVertex(pose,b,d,0,0,normal);}
     private static void skyVertex(PoseStack.Pose pose,VertexConsumer b,Vec3 v,float u,float vv,Vec3 normal){b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor(255,255,255,255).setUv(u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());}
-    /**
-     * Direction TO the sun, calculated entirely from Roblox Lighting.TimeOfDay
-     * and GeographicLatitude. It is intentionally independent of Minecraft's
-     * celestial angle, dimension time, weather, or skylight.
-     */
+
     private static Vec3 sunDirection(RobloxLighting lighting){
-        // This matches the legacy Roblox GetSunDirection convention rather than
-        // using Minecraft's celestial angle.  In particular, Roblox's
-        // GeographicLatitude already incorporates the 23.5-degree axial tilt
-        // into this direction.  Example: 14:00 / 41.73 degrees produces
-        // approximately (-0.4749, 0.8225, 0.3129), the documented legacy result.
+
         double t=lighting.timeOfDay()%24.0;
         double latitude=Math.toRadians(lighting.geographicLatitude()-23.5);
         double longitude=Math.toRadians((t-6.0)*15.0);
@@ -355,9 +303,6 @@ public final class RobloxPartRenderer {
         if(s==null||s.isBlank())return tex(WHITE);
         String raw=s.trim();
 
-        // Roblox content URIs are not Minecraft resource identifiers.
-        // Resolve the legacy built-in rbxasset://textures/... namespace first,
-        // before anything can reach Identifier.fromNamespaceAndPath().
         if(raw.regionMatches(true,0,"rbxasset://",0,11)){
             String legacy=raw.substring(11).replace('\\','/');
             while(legacy.startsWith("/"))legacy=legacy.substring(1);
@@ -368,7 +313,7 @@ public final class RobloxPartRenderer {
                 String bundled="textures/2010/"+leaf;
                 if(RobloxPartRenderer.class.getResource("/assets/robloxium/"+bundled)!=null)return tex(bundled);
             }
-            // Unknown built-in Roblox content must never crash the renderer.
+
             return tex(WHITE);
         }
 
@@ -392,36 +337,19 @@ public final class RobloxPartRenderer {
             entry.getValue().sort((a,b)->Double.compare(distanceSquared(b,cam),distanceSquared(a,cam)));
             c.submitCustomGeometry(ps,translucentTextureType(entry.getKey()),(pose,b)->{for(RobloxPart p:entry.getValue())drawPart(pose,b,p);});
         }
-        
+
         drawDecals(c,ps,parts,cam);
         submitSurfaceType(c,ps,parts,3,SURFACE_STUDS);
         submitSurfaceType(c,ps,parts,4,SURFACE_INLET);
         submitSurfaceType(c,ps,parts,5,SURFACE_UNIVERSAL);
     }
     private static double distanceSquared(RobloxPart p,net.minecraft.world.phys.Vec3 cam){Vec3 q=worldPosition(p.cframe().position());double dx=q.x()-cam.x(),dy=q.y()-cam.y(),dz=q.z()-cam.z();return dx*dx+dy*dy+dz*dz;}
-    /**
-     * Hard, sun-space projected shadows.
-     *
-     * This deliberately does NOT use Minecraft's block shadow system. Roblox
-     * parts live in their own scene, so the shadow caster/receiver test is
-     * performed in Roblox studs first and converted to Minecraft blocks only
-     * when vertices are emitted.
-     *
-     * The algorithm is the same geometric idea used by a shadow-volume
-     * renderer: rays leave the caster in the direction opposite the sun and
-     * the resulting silhouette is clipped against every receiver face that
-     * faces the sun.  This fixes the old "always hit the first top AABB" bug:
-     * rotated parts, walls and stacked parts can now receive the correct hard
-     * shadow.
-     */
+
     private record ShadowTriangle(Vec3 a,Vec3 b,Vec3 c,Vec3 normal,Vec3 center,double radius,
                                    RobloxPart caster,RobloxPart receiver){}
 
     private static void buildShadowCache(List<RobloxPart> parts,Vec3 light){
-        // No distance/grid broadphase: every eligible caster is tested against
-        // every eligible receiver. This deliberately removes the old spatial,
-        // camera, preparation, and projection-distance limits. Exact projection
-        // and face clipping below decide whether a shadow actually lands.
+
         List<RobloxPart> receivers=new ArrayList<>();
         for(RobloxPart receiver:parts){
             if(receivesShadow(receiver))receivers.add(receiver);
@@ -441,9 +369,7 @@ public final class RobloxPartRenderer {
 
     private static void projectShadowIntoCache(RobloxPart caster,RobloxPart receiver,
                                                 List<Vec3> casterVertices,Vec3 light){
-        // No caster/receiver distance or lateral-footprint cutoff is applied.
-        // A shadow may travel arbitrarily far; the actual projected silhouette
-        // is clipped against the receiver face below.
+
         Vec3 center=receiver.cframe().position();
         Vec3[] axes={receiver.cframe().right().normalized(),receiver.cframe().up().normalized(),receiver.cframe().back().normalized()};
         double hx=Math.abs(receiver.size().x()*receiver.meshScale().x())*.5;
@@ -458,10 +384,6 @@ public final class RobloxPartRenderer {
             new ReceiverFace(axes[2].mul(-1),center.sub(axes[2].mul(hz)),axes[0],axes[1],hx,hy)
         };
 
-        // Project the complete caster silhouette onto each receiver plane,
-        // then clip that polygon to the receiver face rectangle. Unlike the
-        // previous corner-hit approach, this produces one continuous flat
-        // shadow that can cover floors, walls, ceilings and the sides of parts.
         for(ReceiverFace face:faces){
             if(face.normal().dot(light)<=0.001)continue;
             List<FacePoint> projected=new ArrayList<>(casterVertices.size());
@@ -482,32 +404,18 @@ public final class RobloxPartRenderer {
             List<FacePoint> clipped=clipFacePolygon(hull,face.halfU(),face.halfV());
             if(clipped.size()<3)continue;
 
-            // Reconstruct the exact 3D points from the face's local 2D
-            // coordinates. The tiny normal offset prevents z-fighting while
-            // keeping the shadow perfectly coplanar with the receiver.
             Vec3 offset=face.normal().mul(0.01);
             FacePoint root=clipped.get(0);
             for(int i=1;i<clipped.size()-1;i++){
                 Vec3 a=facePoint3(face,root).add(offset);
                 Vec3 b=facePoint3(face,clipped.get(i)).add(offset);
                 Vec3 c=facePoint3(face,clipped.get(i+1)).add(offset);
-                // Each triangle is its own flat shadow decal. No edge/face data
-                // is shared with neighboring receiver faces, so a wall shadow
-                // cannot accidentally become a connected 3D shadow surface.
+
                 Vec3 triCenter=a.add(b).add(c).mul(1.0/3.0);
                 double radius=Math.max(triCenter.sub(a).length(),Math.max(triCenter.sub(b).length(),triCenter.sub(c).length()));
-                // Do not throw away an entire projected triangle just because its
-                // CENTER ray is blocked. That was the source of the little triangular
-                // holes: a blocker could cross one part of a triangle, the center
-                // happened to land behind it, and the whole triangle vanished.
-                // Require all four samples (center + 3 vertices) to be blocked before
-                // discarding the triangle. This preserves the complete silhouette
-                // while still rejecting triangles that are wholly behind another Part.
+
                 if(shadowTriangleFullyOccluded(caster,a,b,c,face.normal()))continue;
 
-                // Keep the caster attached to the triangle. This is important: stencil
-                // shadows from separate Parts must remain separate shadow volumes.
-                // We never union their geometry just because their projected areas touch.
                 ShadowTriangle tri=new ShadowTriangle(a,b,c,face.normal(),triCenter,radius,caster,receiver);
                 SHADOW_CACHE.add(tri);
                 SHADOWS_BY_RECEIVER.computeIfAbsent(receiver,k->new ArrayList<>()).add(tri);
@@ -527,10 +435,10 @@ public final class RobloxPartRenderer {
 
     private static List<FacePoint> clipFacePolygon(List<FacePoint> input,double halfU,double halfV){
         List<FacePoint> out=input;
-        out=clipEdge(out,0,halfU);   // u <= +halfU
-        out=clipEdge(out,1,-halfU);  // u >= -halfU
-        out=clipEdge(out,2,halfV);   // v <= +halfV
-        out=clipEdge(out,3,-halfV);  // v >= -halfV
+        out=clipEdge(out,0,halfU);
+        out=clipEdge(out,1,-halfU);
+        out=clipEdge(out,2,halfV);
+        out=clipEdge(out,3,-halfV);
         return out;
     }
 
@@ -576,18 +484,15 @@ public final class RobloxPartRenderer {
     }
 
     private static boolean castsShadow(RobloxPart p){
-        // Transparency remains a hard limit. CastShadow is intentionally kept
-        // as the only other caster-side condition; if RobloxPart exposes it,
-        // this method should return it here.
+
         return shadowRelevantPart(p);
     }
 
     private static boolean receivesShadow(RobloxPart p){
-        // Receivers are limited only by transparency.
+
         return shadowRelevantPart(p);
     }
 
-    /** Returns the eight corners in Roblox/world studs. */
     private static List<Vec3> boxWorldVertices(RobloxPart p){
         Vec3 s=p.size(),scale=p.meshScale();
         double hx=Math.abs(s.x()*scale.x())*.5;
@@ -642,18 +547,6 @@ public final class RobloxPartRenderer {
         vertexUnlit(pose,b,worldPosition(a),color,0,0,n);
     }
 
-
-    /**
-     * Collapse overlapping coplanar shadow triangles into larger independent
-     * triangles.  The shading path is binary (a point is either shadowed or
-     * lit), so overlapping caster shadows must never stack and become darker.
-     * Merging here also keeps the per-receiver point-in-triangle list small.
-     *
-     * We only merge when the two triangles overlap and their combined convex
-     * hull is close to the area of the two source triangles.  That avoids
-     * filling large concave gaps while still combining the common case of
-     * intersecting shadow faces.
-     */
     private static void mergeIntersectingShadowTriangles(){
         if(SHADOWS_BY_RECEIVER.isEmpty())return;
         SHADOW_CACHE.clear();
@@ -695,7 +588,7 @@ public final class RobloxPartRenderer {
         u=u.sub(n.mul(u.dot(n))).normalized();
         Vec3 v=n.cross(u).normalized();
         double[][] pa=projectTri(a,u,v), pb=projectTri(b,u,v);
-        // Separating-axis test for two convex triangles in the receiver plane.
+
         double[][][] tris={pa,pb};
         for(double[][] tri:tris){
             for(int e=0;e<3;e++){
@@ -732,18 +625,14 @@ public final class RobloxPartRenderer {
         double sourceArea=triArea2d(aa)+triArea2d(bb);
         double hullArea=polyArea2d(hull);
         if(sourceArea<=1e-8 || hullArea>sourceArea*1.18)return null;
-        // Keep merged geometry only when the triangles genuinely overlap in
-        // area (edge-touching alone should not cause a merge).
+
         double interLower=Math.max(0.0,sourceArea-hullArea);
         if(interLower<1e-7)return null;
         Vec3 origin=a.a();
         Vec3 p0=origin.add(u.mul(hull.get(0)[0]-origin.dot(u))).add(v.mul(hull.get(0)[1]-origin.dot(v)));
         Vec3 p1=origin.add(u.mul(hull.get(1)[0]-origin.dot(u))).add(v.mul(hull.get(1)[1]-origin.dot(v)));
         Vec3 p2=origin.add(u.mul(hull.get(2)[0]-origin.dot(u))).add(v.mul(hull.get(2)[1]-origin.dot(v)));
-        // The hull can have more than three points.  We intentionally keep the
-        // largest-area triangle as the conservative merged representative only
-        // when the hull is triangular; otherwise triangulate below by fan and
-        // return null so the caller keeps the original exact union.
+
         if(hull.size()!=3)return null;
         Vec3 center=p0.add(p1).add(p2).mul(1.0/3.0);
         double radius=Math.max(center.sub(p0).length(),Math.max(center.sub(p1).length(),center.sub(p2).length()));
@@ -772,15 +661,12 @@ public final class RobloxPartRenderer {
     private static double cross2d(double[] a,double[] b,double[] c){return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);}
 
     private static long gridKey(int x,int y,int z){
-        // Three signed 21-bit coordinates packed into one long. Places are
-        // nowhere near the range limit, and this avoids allocating key objects.
+
         return ((long)(x&0x1FFFFF)<<42)|((long)(y&0x1FFFFF)<<21)|(long)(z&0x1FFFFF);
     }
 
-    // Kept as a named hook for older callers; projected black shadow geometry is
-    // intentionally gone. Shadows are applied during receiver shading instead.
     private static void drawCachedShadows(SubmitNodeCollector c,PoseStack ps){
-        // no-op
+
     }
     private static void drawCharacter(SubmitNodeCollector c,PoseStack ps,RobloxCharacter ch){if(ch==null)return;Map<Identifier,List<RobloxPart>> groups=new HashMap<>();for(RobloxPart p:ch.bodyParts())if(p.transparency()<1)groups.computeIfAbsent(textureFor(p),k->new ArrayList<>()).add(p);for(var entry:groups.entrySet()){boolean translucent=entry.getValue().stream().anyMatch(p->p.transparency()>0.001);c.submitCustomGeometry(ps,translucent?translucentTextureType(entry.getKey()):repeatTextureType(entry.getKey()),(pose,b)->{for(RobloxPart p:entry.getValue())drawPart(pose,b,p);});}drawDecals(c,ps,ch.bodyParts(),CURRENT_CAMERA);}
     private static Identifier textureFor(RobloxPart p){
@@ -824,8 +710,7 @@ public final class RobloxPartRenderer {
         Vec3 visual=new Vec3(size.x()*mesh.x(),size.y()*mesh.y(),size.z()*mesh.z());
         double hx=visual.x()/2,hy=visual.y()/2,hz=visual.z()/2;
         int col=variedColor(p);
-        // FileMesh / MeshPart geometry wins over the built-in MeshType so
-        // package heads, hats and gears keep their authored mesh.
+
         if(!p.meshId().isBlank()){
             OnlineMesh onlineMesh=resolveMesh(p.meshId());
             if(onlineMesh!=null){
@@ -835,21 +720,34 @@ public final class RobloxPartRenderer {
             }
         }
         int meshType=p.meshType();
-        // Legacy SpecialMesh.MeshType values (2010 numeric enum):
-        // Head=0 Torso=1 Wedge=2 Sphere=3 Cylinder=4 FileMesh=5 Brick=6 CornerWedge=11
-        // MeshType defaults to Head(0) on SpecialMesh, but a regular Part with
-        // no mesh also commonly reports 0. Only treat it as a head when the
-        // part is actually named Head (the 2010 character convention).
+
         if(meshType==0 && "Head".equalsIgnoreCase(p.name())
                 && detailDistanceSquared(p)<=DETAIL_DISTANCE_STUDS*DETAIL_DISTANCE_STUDS){
             drawHead(pose,b,p,col);
             return;
         }
         if(meshType==1){drawTorso(pose,b,p,hx,hy,hz,col);return;}
-        if(meshType==2 || "WedgePart".equalsIgnoreCase(p.className())){drawWedge(pose,b,p,hx,hy,hz,col);return;}
+        if(meshType==2){drawWedge(pose,b,p,hx,hy,hz,col);return;}
         if(meshType==3){drawSphere(pose,b,p,col);return;}
         if(meshType==4){drawCylinder(pose,b,p,hx,hy,hz,col);return;}
-        if(meshType==11 || "CornerWedgePart".equalsIgnoreCase(p.className())){drawCornerWedge(pose,b,p,hx,hy,hz,col);return;}
+        if(meshType==11){drawCornerWedge(pose,b,p,hx,hy,hz,col);return;}
+
+        if("WedgePart".equalsIgnoreCase(p.className())){
+            drawWedge(pose,b,p,hx,hy,hz,col);
+            return;
+        }
+        if("CornerWedgePart".equalsIgnoreCase(p.className())){
+            drawCornerWedge(pose,b,p,hx,hy,hz,col);
+            return;
+        }
+        switch(p.shape()){
+            case 0 -> { drawSphere(pose,b,p,col); return; }
+            case 2 -> { drawCylinder(pose,b,p,hx,hy,hz,col); return; }
+            case 3 -> { drawWedge(pose,b,p,hx,hy,hz,col); return; }
+            case 4 -> { drawCornerWedge(pose,b,p,hx,hy,hz,col); return; }
+            case 1 -> {  }
+            default -> {  }
+        }
         drawCube(pose,b,p,hx,hy,hz,col);
     }
     private static double detailDistanceSquared(RobloxPart p){
@@ -886,19 +784,15 @@ public final class RobloxPartRenderer {
         Vec3 wa=world(p,a),wb=world(p,bb),wc=world(p,c),wd=world(p,e),wn=worldNormal(p,n);
         int alpha=(int)Math.round((1-d.transparency())*255);
         int color=(alpha<<24)|0xFFFFFF;
-        vertexSurface(pose,b,wa,color,0,1,wn,p);
-        vertexSurface(pose,b,wb,color,1,1,wn,p);
-        vertexSurface(pose,b,wc,color,1,0,wn,p);
-        vertexSurface(pose,b,wc,color,1,0,wn,p);
-        vertexSurface(pose,b,wd,color,0,0,wn,p);
-        vertexSurface(pose,b,wa,color,0,1,wn,p);
+
+        vertexSurface(pose,b,wa,color,0,0,wn,p);
+        vertexSurface(pose,b,wb,color,1,0,wn,p);
+        vertexSurface(pose,b,wc,color,1,1,wn,p);
+        vertexSurface(pose,b,wc,color,1,1,wn,p);
+        vertexSurface(pose,b,wd,color,0,1,wn,p);
+        vertexSurface(pose,b,wa,color,0,0,wn,p);
     }
 
-    /**
-     * FileMesh (2010 SpecialMesh) scales the authored vertices by Mesh.Scale
-     * and then adds Mesh.Offset. Part.Size is the collision box only.
-     * MeshPart stretches the authored AABB to Part.Size * Mesh.Scale.
-     */
     private static void drawOnlineMesh(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,OnlineMesh mesh,int color){
         drawOnlineMesh(pose,b,p,mesh,color,false);
     }
@@ -1103,7 +997,6 @@ public final class RobloxPartRenderer {
         }
     }
 
-    /** Prefer raw asset bytes so Roblox .mesh files are not forced through the OBJ parser. */
     private static OnlineMesh loadMeshBytesFromAssets(String id){
         String[] methods={"meshBytes","assetBytes","bytes","download","downloadBytes"};
         for(String name:methods){
@@ -1149,7 +1042,6 @@ public final class RobloxPartRenderer {
         return null;
     }
 
-    /** Only safe filename tokens. Roblox MeshIds are often URLs such as asset?id=1136139. */
     private static List<String> localMeshFileNames(String id){
         LinkedHashSet<String> names=new LinkedHashSet<>();
         String raw=id==null?"":id.trim();
@@ -1189,11 +1081,6 @@ public final class RobloxPartRenderer {
         return out;
     }
 
-    /**
-     * Parse a Roblox mesh asset. Accepts OBJ text, Roblox mesh v1 ASCII,
-     * and Roblox mesh v2–v5 binary. Call this from RobloxOnlineAssets after
-     * downloading raw asset bytes so FileMesh IDs actually render.
-     */
     public static OnlineMesh parseMeshAsset(byte[] data){
         if(data==null||data.length<8)return null;
         int n=Math.min(data.length,32);
@@ -1262,23 +1149,23 @@ public final class RobloxPartRenderer {
         }else if(ver.startsWith("3.")){
             vertexSize=Byte.toUnsignedInt(buf.get());
             faceSize=Byte.toUnsignedInt(buf.get());
-            buf.getShort(); // lodSize
+            buf.getShort();
             lodCount=Short.toUnsignedInt(buf.getShort());
             vertexCount=buf.getInt();
             faceCount=buf.getInt();
         }else{
-            // v4 / v5: skip extra header fields, vertices are 40 bytes.
-            buf.getShort(); // lodType
+
+            buf.getShort();
             vertexCount=buf.getInt();
             faceCount=buf.getInt();
             lodCount=Short.toUnsignedInt(buf.getShort());
             int boneCount=Short.toUnsignedInt(buf.getShort());
             int nameTable=buf.getInt();
-            buf.getShort(); // subsets
+            buf.getShort();
             buf.get(); buf.get();
             if(ver.startsWith("5.")){buf.getInt();buf.getInt();}
             vertexSize=40;
-            // envelopes sit between verts and faces when bones exist; handled below
+
             buf.position(body+headerSize);
             if(vertexCount<=0||faceCount<=0||vertexCount>2_000_000||faceCount>2_000_000)return null;
             List<Vec3> verts=new ArrayList<>(vertexCount),norms=new ArrayList<>(vertexCount);
@@ -1321,8 +1208,7 @@ public final class RobloxPartRenderer {
             int faceCount,int faceSize,int lodCount){
         int[] lods=null;
         int usedFaces=faceCount;
-        // Faces come before LOD offsets. Read faces first, then (optionally)
-        // shrink to the highest-detail LOD range.
+
         int faceStart=buf.position();
         if(lodCount>=2){
             int afterFaces=faceStart+faceCount*faceSize;
@@ -1424,10 +1310,6 @@ public final class RobloxPartRenderer {
         double hy=Math.abs(size.y()*scale.y())*.5;
         double hz=Math.abs(size.z()*scale.z())*.5;
 
-        // Enough tessellation for the classic Roblox sphere without making
-        // every SpecialMesh expensive. The poles are shared conceptually by
-        // the UV grid, while vertices are emitted per triangle for smooth
-        // normals and correct UVs.
         final int latitudes=12;
         final int longitudes=24;
         for(int lat=0;lat<latitudes;lat++){
@@ -1461,11 +1343,6 @@ public final class RobloxPartRenderer {
         return new Vec3(c*Math.cos(longitude),Math.sin(latitude),c*Math.sin(longitude));
     }
 
-    /**
-     * SpecialMesh.Cylinder / CylinderMesh. Roblox cylinders run along local X,
-     * with Y/Z as the elliptical radii. CylinderMesh uses the smaller of Y/Z
-     * as a uniform radius; SpecialMesh.Cylinder keeps the part's Y and Z.
-     */
     private static void drawCylinder(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,double hx,double hy,double hz,int color){
         Vec3 off=p.meshOffset();
         final int slices=20;
@@ -1488,10 +1365,6 @@ public final class RobloxPartRenderer {
         }
     }
 
-    /**
-     * Classic SpecialMesh.Torso: a block whose left/right sides slope in so
-     * the top is narrower. Matches the 2010 built-in torso silhouette.
-     */
     private static void drawTorso(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,double hx,double hy,double hz,int color){
         Vec3 off=p.meshOffset();
         double top=0.5;
@@ -1529,16 +1402,7 @@ public final class RobloxPartRenderer {
     private static Vec3 ellipsoid(double hx,double hy,double hz,double latitude,double longitude){double cos=Math.cos(latitude);return new Vec3(hx*cos*Math.cos(longitude),hy*Math.sin(latitude),hz*cos*Math.sin(longitude));}
     private static void triangle(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,Vec3 a,Vec3 bb,Vec3 c,Vec3 normal,int color,float[] uvs){Vec3 n=worldNormal(p,normal.normalized());Vec3 wa=world(p,a),wb=world(p,bb),wc=world(p,c);int ra=reflect(color,p.reflectance(),wa,n),rb=reflect(color,p.reflectance(),wb,n),rc=reflect(color,p.reflectance(),wc,n);vertex(pose,b,wa,ra,uvs[0],uvs[1],n,p);vertex(pose,b,wb,rb,uvs[2],uvs[3],n,p);vertex(pose,b,wc,rc,uvs[4],uvs[5],n,p);}
     private static Vec3 worldNormal(RobloxPart p,Vec3 n){return p.cframe().transformVector(n).normalized();}
-    /**
-     * Loads the bundled replacement head directly from the supplied OBJ.
-     *
-     * The old loader tried to reverse-engineer a legacy .mesh text layout and
-     * then uniformly scaled the result. That was especially bad for the R6
-     * head because the Roblox head occupies a rectangular 2x1x1 part while
-     * the actual mesh is approximately spherical. The OBJ is now treated as
-     * the source of truth: positions, UVs and normals are expanded per face,
-     * centered and kept at the mesh's native scale.
-     */
+
     private static HeadMesh loadHeadMesh(){
         try(InputStream raw=RobloxPartRenderer.class.getResourceAsStream(
                 "/robloxium/client2010/content/fonts/head.obj")){
@@ -1574,8 +1438,7 @@ public final class RobloxPartRenderer {
                         }
                         case "f" -> {
                             if(parts.length<4)continue;
-                            // OBJ faces may be polygons. Fan triangulate them so
-                            // quads/ngons from Blender remain valid Minecraft geometry.
+
                             FaceVertex first=parseObjFace(parts[1],vertices.size(),texcoords.size(),normals.size());
                             for(int j=2;j<parts.length-1;j++){
                                 FaceVertex second=parseObjFace(parts[j],vertices.size(),texcoords.size(),normals.size());
@@ -1641,23 +1504,7 @@ public final class RobloxPartRenderer {
 
     private record HeadMesh(Vec3[] positions,Vec3[] normals,float[][] uvs,Vec3 center,Vec3 half){}
     private static void drawCube(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,double hx,double hy,double hz,int col){face(pose,b,p,new Vec3(-hx,-hy,hz),new Vec3(hx,-hy,hz),new Vec3(hx,hy,hz),new Vec3(-hx,hy,hz),0,0,1,col);face(pose,b,p,new Vec3(hx,-hy,-hz),new Vec3(-hx,-hy,-hz),new Vec3(-hx,hy,-hz),new Vec3(hx,hy,-hz),0,0,-1,col);face(pose,b,p,new Vec3(-hx,-hy,-hz),new Vec3(-hx,-hy,hz),new Vec3(-hx,hy,hz),new Vec3(-hx,hy,-hz),-1,0,0,col);face(pose,b,p,new Vec3(hx,-hy,hz),new Vec3(hx,-hy,-hz),new Vec3(hx,hy,-hz),new Vec3(hx,hy,hz),1,0,0,col);face(pose,b,p,new Vec3(-hx,hy,hz),new Vec3(hx,hy,hz),new Vec3(hx,hy,-hz),new Vec3(-hx,hy,-hz),0,1,0,col);face(pose,b,p,new Vec3(-hx,-hy,-hz),new Vec3(hx,-hy,-hz),new Vec3(hx,-hy,hz),new Vec3(-hx,-hy,hz),0,-1,0,col);}
-    /**
-     * Builds a real chamfered box rather than shrinking a cube and trying to
-     * patch the gaps around it.  The surface is split into the 6 original
-     * planar faces, 12 planar edge strips and 8 corner triangles.
-     *
-     * Every generated polygon is wound from its requested outward normal, so
-     * the bevel cannot randomly flip when a part is rotated.
-     */
-    /**
-     * Robust bevel renderer. The important change is that the original closed
-     * cube is ALWAYS emitted first. The bevel is an additional closed set of
-     * strips inside that cube, so a bad winding or a corner calculation can
-     * never create a literal hole in the part. The chamfer is deliberately
-     * tiny, matching the restrained 2010-era block look.
-     */
-    // Kept as a compatibility method for old callers. It intentionally emits
-    // a plain closed Roblox Part: meshes and Parts are never chamfered here.
+
     private static void drawBeveledBox(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,
                                        double hx,double hy,double hz,int col){
         drawCube(pose,b,p,hx,hy,hz,col);
@@ -1674,9 +1521,7 @@ public final class RobloxPartRenderer {
         triangle(pose,b,p,a,bb,c,n,color,new float[]{0,0,1,0,0,1});
     }
     private static void drawWedge(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,double hx,double hy,double hz,int col){
-        // WedgePart visual geometry only. The collision shape is handled elsewhere
-        // and is intentionally untouched. The ramp is flipped so the high edge is +Z.
-        // The sloped face is emitted as exactly two triangles with no overlap.
+
         Vec3 a=new Vec3(-hx,-hy,-hz);
         Vec3 bb=new Vec3(hx,-hy,-hz);
         Vec3 c=new Vec3(hx,-hy,hz);
@@ -1689,13 +1534,11 @@ public final class RobloxPartRenderer {
         triangleFace(pose,b,p,a,e,d,new Vec3(-1,0,0),col);
         triangleFace(pose,b,p,bb,c,f,new Vec3(1,0,0),col);
 
-        // Flipped ramp: two non-overlapping triangles, sharing only the diagonal.
         triangleFace(pose,b,p,e,f,c,new Vec3(0,hz,hy),col);
         triangleFace(pose,b,p,e,c,d,new Vec3(0,hz,hy),col);
     }
     private static void drawCornerWedge(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,double hx,double hy,double hz,int col){
-        // Closed corner-wedge volume. Keeping every face explicit avoids the
-        // degenerate triangles the previous implementation emitted.
+
         Vec3 a=new Vec3(-hx,-hy,-hz),bb=new Vec3(hx,-hy,-hz),c=new Vec3(hx,-hy,hz),d=new Vec3(-hx,-hy,hz);
         Vec3 peak=new Vec3(hx,hy,-hz);
         face(pose,b,p,a,bb,c,d,0,-1,0,col);
@@ -1718,9 +1561,6 @@ public final class RobloxPartRenderer {
         float uTex=(float)(edgeU.length()/tileStuds);
         float vTex=(float)(edgeV.length()/tileStuds);
 
-        // Always draw the full face lit. A tiny caster on a huge receiver must
-        // never darken the whole quad. The exact projected silhouette is stamped
-        // on top as a few extra triangles.
         emitFaceQuad(pose,b,p,a,bb,c,d,n,color,0f,uTex,0f,vTex);
         stampFaceShadows(pose,b,p,a,bb,d,n,color,tileStuds);
     }
@@ -1736,11 +1576,7 @@ public final class RobloxPartRenderer {
         Vec3 wa=world(p,a), wb=world(p,bb), wc=world(p,c), wd=world(p,d);
         int ra=reflect(color,p.reflectance(),wa,wn), rb=reflect(color,p.reflectance(),wb,wn),
             rc=reflect(color,p.reflectance(),wc,wn), rd=reflect(color,p.reflectance(),wd,wn);
-        // Evaluate the shadow once at the center of the cell and keep all four
-        // vertices on the same side of the hard stencil boundary. If the four
-        // vertices were shaded independently, a boundary crossing a cell would
-        // create a diagonal half-triangle, which is exactly the artifact we are
-        // trying to avoid.
+
         vertexWithShadow(pose,b,wa,ra,u0,v1,n,p,1.0);
         vertexWithShadow(pose,b,wb,rb,u1,v1,n,p,1.0);
         vertexWithShadow(pose,b,wc,rc,u1,v0,n,p,1.0);
@@ -1803,7 +1639,7 @@ public final class RobloxPartRenderer {
         Vec3 normal=n.normalized();
         double ndl=Math.max(0,normal.dot(CURRENT_SUN));
         double shadow=Double.isNaN(forcedShadow)?shadowMask(part,v,normal):forcedShadow;
-        // Ambient stays; only the direct sun term is killed inside a projected shadow.
+
         double diffuse=CURRENT_LIGHTING.ambientFactor()+CURRENT_LIGHTING.sunFactor()*ndl*shadow;
         double specular=0.0;
         Vec3 view=new Vec3(CURRENT_CAMERA.x()-v.x(),CURRENT_CAMERA.y()-v.y(),CURRENT_CAMERA.z()-v.z()).normalized();
@@ -1841,8 +1677,7 @@ public final class RobloxPartRenderer {
     private static double shadowLightMultiplier(){
         int c=CURRENT_LIGHTING==null?0xFF333333:CURRENT_LIGHTING.shadowColor();
         double r=((c>>16)&255)/255.0, g=((c>>8)&255)/255.0, b=(c&255)/255.0;
-        // ShadowColor is the remaining light contribution in the legacy-style
-        // CPU lighting path: black means a hard shadow, white means no darkening.
+
         return Math.max(0.0,Math.min(1.0,0.2126*r+0.7152*g+0.0722*b));
     }
 
@@ -1850,16 +1685,13 @@ public final class RobloxPartRenderer {
         Vec3 origin=receiverPoint.add(receiverNormal.mul(0.01));
         Vec3 light=CURRENT_SUN.normalized();
         if(light.lengthSquared()<1e-9)return false;
-        // Travel from the receiver toward the light. Any other opaque Part hit
-        // before reaching the caster's projected ray blocks this shadow sample.
+
         double casterDistance=rayBoxHitDistance(origin,light,caster);
         if(casterDistance<0.02)return false;
         for(RobloxPart blocker:CURRENT_SHADOW_PARTS){
             if(blocker==caster || blocker.transparency()>=0.999)continue;
             double t=rayBoxHitDistance(origin,light,blocker);
-            // Only geometry between the receiver and the caster can occlude
-            // this caster's shadow. Parts behind the caster must not connect or
-            // erase an otherwise valid shadow.
+
             if(t>=0.01 && t<casterDistance-0.02)return true;
         }
         return false;
@@ -1874,9 +1706,7 @@ public final class RobloxPartRenderer {
     }
 
     private static double rayBoxHitDistance(Vec3 origin,Vec3 dir,RobloxPart part){
-        // Transform the ray into the Part's local box space. Roblox Parts are
-        // the authoritative collision/shadow volumes, so no Minecraft blocks
-        // or Minecraft sun state participate here.
+
         CFrame cf=part.cframe();
         Vec3 localOrigin=cf.inverse().transformPoint(origin);
         Vec3 localDir=cf.inverse().transformVector(dir);
@@ -1900,8 +1730,7 @@ public final class RobloxPartRenderer {
 
     private static boolean pointInShadowTriangle(Vec3 p,ShadowTriangle t){
         Vec3 n=t.normal().normalized();
-        // The triangle lies on the receiver plane. Allow a small tolerance for
-        // floating point conversion and the existing 0.002 stud decal offset.
+
         double plane=Math.abs(p.sub(t.a()).dot(n));
         if(plane>0.08)return false;
         Vec3 ab=t.b().sub(t.a()), ap=p.sub(t.a());
@@ -1916,8 +1745,7 @@ public final class RobloxPartRenderer {
         RobloxLighting l=CURRENT_LIGHTING;
         if(l==null)return color;
         double brightness=Math.max(0,Math.min(10,l.brightness()));
-        // ColorShift_Top affects surfaces facing the Roblox sun; Bottom affects
-        // surfaces facing away. These are Color3 lighting tints, not texture colors.
+
         int shift=ndl>=0.5?l.colorShiftTop():l.colorShiftBottom();
         double shiftAmount=Math.min(1.0,brightness*0.35);
         double sr=((shift>>16)&255)/255.0, sg=((shift>>8)&255)/255.0, sb=(shift&255)/255.0;
@@ -1927,8 +1755,7 @@ public final class RobloxPartRenderer {
             g=g*(1-shiftAmount)+g*sg*shiftAmount;
             b=b*(1-shiftAmount)+b*sb*shiftAmount;
         }
-        // EnvironmentDiffuseScale uses the actual loaded Roblox skybox as the
-        // ambient environment. This is deliberately separate from Reflectance.
+
         double envScale=l.environmentDiffuseScale();
         if(envScale>0.0001 && SKY_ENVIRONMENT!=null){
             int sky=SKY_ENVIRONMENT.sample(normal.normalized());
@@ -1968,18 +1795,10 @@ public final class RobloxPartRenderer {
         Vec3 n=normal.normalized();
         Vec3 toCamera=new Vec3(CURRENT_CAMERA.x()-position.x(),CURRENT_CAMERA.y()-position.y(),CURRENT_CAMERA.z()-position.z()).normalized();
         if(toCamera.lengthSquared()<1e-9)return color;
-        // The outgoing environment ray is the reflection of the incoming
-        // camera ray around the surface normal.
+
         Vec3 environment=n.mul(2.0*n.dot(toCamera)).sub(toCamera).normalized();
         int sky=SKY_ENVIRONMENT.sample(environment);
-        // Roblox Reflectance is an environment contribution, not an opaque
-        // replacement for the material. Preserve the brick/material color at
-        // low values and blend toward the actual skybox at high values.
-        // Reflectance in the 2010 renderer is an environment-map contribution.
-        // Do not reduce it to a tiny specular highlight: at 1.0 the skybox is
-        // supposed to be plainly visible on the surface. The Fresnel term keeps
-        // low-angle surfaces from looking completely flat while preserving the
-        // authored Reflectance value.
+
         double facing=Math.max(0.0,n.dot(toCamera));
         double edge=0.25+0.75*Math.pow(1.0-facing,2.0);
         double strength=Math.min(1.0,amount*(0.72+0.28*edge));
@@ -2040,10 +1859,7 @@ public final class RobloxPartRenderer {
         float uTex=(float)(edgeU.length()/SURFACE_TILE_STUDS);
         float vTex=(float)(edgeV.length()/SURFACE_TILE_STUDS);
         Vec3 wn=n.normalized();
-        // Surface types are decals sitting on the Part face. Offset them a tiny
-        // amount toward the face normal as well as using the polygon-offset
-        // render pipeline. This eliminates Vulkan/OpenGL z-fighting without
-        // visibly separating the 2010 Roblox studs/inlet geometry.
+
         final double SURFACE_OFFSET_STUDS=0.0025;
         Vec3 offset=expected.mul(SURFACE_OFFSET_STUDS);
         Vec3 wa=world(p,a.add(offset)), wb=world(p,bb.add(offset)),
@@ -2056,14 +1872,14 @@ public final class RobloxPartRenderer {
         vertexSurface(pose,b,wd,rd,0,0,n,p);
         vertexSurface(pose,b,wa,ra,0,vTex,n,p);
     }
-    /** CPU-side cubemap sampler backed by the exact six skybox textures. */
+
     private static final class SkyEnvironment {
         private final BufferedImage[] faces;
         private SkyEnvironment(BufferedImage[] faces){this.faces=faces;}
         static SkyEnvironment load(){
             try{
                 BufferedImage[] f=new BufferedImage[6];
-                // Indices match SKY: +X, -X, +Y, -Y, +Z, -Z.
+
                 for(int i=0;i<SKY.length;i++){
                     String path="/assets/robloxium/"+SKY[i];
                     try(InputStream in=RobloxPartRenderer.class.getResourceAsStream(path)){
@@ -2106,27 +1922,6 @@ public final class RobloxPartRenderer {
         private static int lerp(int a,int b,double t){return (int)Math.round(a+(b-a)*t);}
     }
 
-    /*
-     * Roblox geometry gets its own world pipeline.  Do NOT use TEXT or
-     * TEXT_POLYGON_OFFSET here: those pipelines require the text shader
-     * descriptor layout (including Sampler2) and are not world-material
-     * pipelines.  That was the source of the Vulkan Missing sampler Sampler2
-     * crash.
-     *
-     * The Roblox renderer bakes Roblox 2010 lighting, shadowing, specular and
-     * Reflectance into vertex colour. Therefore the world shader only needs
-     * position + UV + colour + Sampler0. No Minecraft lightmap is involved.
-     */
-    /*
-     * 26.2 provides a POSITION_TEX_COLOR + Sampler0 shader interface through
-     * GUI_TEXTURED_SNIPPET. We reuse only that shader interface and override
-     * the primitive topology to TRIANGLES for the Roblox level stream.
-     */
-    // 2010 Roblox geometry is submitted as explicit triangle lists.  Do not
-    // inherit GUI_QUADS topology here: Vulkan will otherwise reinterpret the
-    // vertex stream and create the triangular holes/diagonal faces seen in the
-    // broken level renderer.  The shader interface remains POSITION_TEX_COLOR
-    // + Sampler0, but the primitive topology is explicitly TRIANGLES.
     private static RenderPipeline.Builder robloxPipeline(String path){
         return RenderPipeline.builder(RenderPipelines.GUI_TEXTURED_SNIPPET)
             .withLocation(Identifier.fromNamespaceAndPath("robloxium", path))
