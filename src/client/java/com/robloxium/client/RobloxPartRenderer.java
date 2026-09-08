@@ -57,7 +57,7 @@ public final class RobloxPartRenderer {
     private static final String SURFACE_INLET="textures/2010/materials/surface_inlet.png";
     private static final String SURFACE_UNIVERSAL="textures/2010/materials/surface_universal.png";
 
-    private static final double DETAIL_DISTANCE_STUDS=100.0;
+    private static final double DETAIL_DISTANCE_STUDS=45.0;
 
     private static final SkyEnvironment SKY_ENVIRONMENT=SkyEnvironment.load();
 
