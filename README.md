@@ -4,7 +4,7 @@
 
 
 
-<img width="920" height="250" alt="image" src="https://github.com/user-attachments/assets/9685de56-26fc-4c2f-8092-b04d367f2a00" />
+<img width="486" height="129" alt="Robloxium logo" src="https://github.com/user-attachments/assets/69644418-1141-4dff-80f2-ee63c1974090" />
 
 
 
