@@ -26,7 +26,18 @@ Commands
 
 
 
+real quickly so people dont complain
 
+fabric
+
+26.2
+
+go to config
+robloxium
+then make a folder called places
+then put your rbxls
+2010 and below into there
+then use /robloxium load with the full file name including .rbxl
 
 
 
