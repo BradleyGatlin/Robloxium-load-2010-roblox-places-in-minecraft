@@ -48,7 +48,7 @@ public final class RobloxiumClient implements ClientModInitializer {
 
             // Roblox scripts see the real Minecraft player as Players.LocalPlayer.
             // This avoids maintaining a second fake avatar for script interaction.
-            g.playersService().setMinecraftLocalPlayer(mc.player);
+            g.playersService().setMinecraftLocalPlayer(mc.player,mc.player.getName().getString());
 
             g.start();
             HOST.replace(g);

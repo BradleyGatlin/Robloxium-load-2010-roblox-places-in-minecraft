@@ -65,4 +65,8 @@ public final class RobloxCharacter extends RobloxInstance {
         solve("Neck");solve("Left Shoulder");solve("Right Shoulder");solve("Left Hip");solve("Right Hip");
     }
     private void solve(String name){RobloxMotor6D j=joints.get(name);if(j==null||j.part0()==null||j.part1()==null)return;j.part1().cframe(j.part0().cframe().multiply(j.c0()).multiply(j.transform()).multiply(j.c1().inverse()));}
+
+    public RobloxPart getHumanoidRootPart(){return FindFirstChild("HumanoidRootPart") instanceof RobloxPart p?p:null;}
+    public RobloxPart getTorso(){return torso;}
+    public void MoveTo(Vec3 position){if(torso!=null)torso.cframe(torso.cframe().withPosition(position));}
 }
