@@ -1,7 +1,6 @@
 package com.robloxium.math;
 
 public record Vec3(double x, double y, double z) {
-    public double getX(){return x;} public double getY(){return y;} public double getZ(){return z;}
     public static final Vec3 ZERO = new Vec3(0, 0, 0);
     public Vec3 add(Vec3 v) { return new Vec3(x + v.x, y + v.y, z + v.z); }
     public Vec3 sub(Vec3 v) { return new Vec3(x - v.x, y - v.y, z - v.z); }

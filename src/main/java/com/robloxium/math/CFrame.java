@@ -30,11 +30,6 @@ public final class CFrame {
     }
 
     public Vec3 position() { return position; }
-    public Vec3 getPosition() { return position; }
-    public Vec3 getP() { return position; }
-    public Vec3 getLookVector() { return back().mul(-1); }
-    public Vec3 getRightVector() { return right(); }
-    public Vec3 getUpVector() { return up(); }
     public double[][] rotation() { return copy(r); }
     public CFrame withPosition(Vec3 p) { return new CFrame(p, r); }
 

@@ -5,7 +5,7 @@ import com.robloxium.math.Vec3;
 
 /** A Part stores exactly what the guest Roblox place says, in Roblox units. */
 public final class RobloxPart extends RobloxInstance {
-    private final RobloxSignal touched=new RobloxSignal();
+    private final RobloxTouchEvent touched=new RobloxTouchEvent();
     private CFrame cframe=CFrame.identity();
     private Vec3 size=new Vec3(4,1,2);
     private Vec3 meshScale=new Vec3(1,1,1);
@@ -43,8 +43,8 @@ public final class RobloxPart extends RobloxInstance {
     public boolean canCollide(){return canCollide;} public void canCollide(boolean v){canCollide=v;}
     public Vec3 velocity(){return velocity;} public void velocity(Vec3 v){velocity=v==null?Vec3.ZERO:v;}
     public Vec3 rotVelocity(){return rotVelocity;} public void rotVelocity(Vec3 v){rotVelocity=v==null?Vec3.ZERO:v;}
-    public RobloxSignal touched(){return touched;} public RobloxSignal getTouched(){return touched;} public RobloxSignal Touched(){return touched;}
-    public void fireTouched(Object hit){touched.fire(hit);}
+    public RobloxTouchEvent touched(){return touched;} public RobloxTouchEvent getTouched(){return touched;}
+    void fireTouched(Object hit){touched.fire(hit);}
     public double transparency(){return transparency;} public void transparency(double v){transparency=Math.max(0,Math.min(1,v));}
     public double friction(){return friction;} public void friction(double v){friction=Math.max(0,v);}
     public double elasticity(){return elasticity;} public void elasticity(double v){elasticity=Math.max(0,v);}
@@ -53,12 +53,6 @@ public final class RobloxPart extends RobloxInstance {
     public int topSurface(){return topSurface;} public int bottomSurface(){return bottomSurface;} public int frontSurface(){return frontSurface;} public int backSurface(){return backSurface;} public int leftSurface(){return leftSurface;} public int rightSurface(){return rightSurface;}
     public void surfaces(int t,int b,int f,int ba,int l,int r){topSurface=t;bottomSurface=b;frontSurface=f;backSurface=ba;leftSurface=l;rightSurface=r;}
     public int colorWithAlpha(){int a=(int)Math.round((1-transparency)*255);int rgb=brickColorArgb(brickColor);return (a<<24)|rgb;}
-    public String getMaterialName(){return materialName(material);}
-    public int getBrickColorNumber(){return brickColor;}
-    public void setBrickColorNumber(int v){brickColor(v);}
-    public RobloxSignal getTouchedSignal(){return touched;}
-    public void MakeJoints(){} public void makeJoints(){}
-
     public static int colorWithAlphaFor(int id){return 0xFF000000|brickColorArgb(id);}
     public static int brickColorArgb(int id){
         // Roblox's legacy BrickColor table. These are the IDs used by old
@@ -180,29 +174,5 @@ public final class RobloxPart extends RobloxInstance {
             case 1536->"Ice";
             default->"Plastic";
         };
-    }
-
-    // JavaBean aliases are intentionally kept alongside the compact runtime API because
-    // LuaJ exposes Java userdata through getX/setX names.
-    public CFrame getCFrame(){return cframe;} public void setCFrame(CFrame v){cframe(v);}
-    public Vec3 getPosition(){return cframe.position();} public void setPosition(Vec3 v){cframe(cframe.withPosition(v));}
-    public Vec3 getSize(){return size;} public void setSize(Vec3 v){size(v);}
-    public int getBrickColor(){return brickColor;} public RobloxBrickColor getBrickColorObject(){return new RobloxBrickColor(brickColor);} public void setBrickColor(int v){brickColor(v);} public void setBrickColor(RobloxBrickColor v){if(v!=null)brickColor(v.getNumber());}
-    public int getMaterial(){return material;} public void setMaterial(int v){material(v);}
-    public String getTextureID(){return textureId;} public void setTextureID(String v){textureId(v);}
-    public double getReflectance(){return reflectance;} public void setReflectance(double v){reflectance(v);}
-    public boolean getAnchored(){return anchored;} public void setAnchored(boolean v){anchored(v);}
-    public boolean getCanCollide(){return canCollide;} public void setCanCollide(boolean v){canCollide(v);}
-    public double getTransparency(){return transparency;} public void setTransparency(double v){transparency(v);}
-    public Vec3 getVelocity(){return velocity;} public void setVelocity(Vec3 v){velocity(v);}
-    public Vec3 getRotVelocity(){return rotVelocity;} public void setRotVelocity(Vec3 v){rotVelocity(v);}
-    public double getFriction(){return friction;} public void setFriction(double v){friction(v);}
-    public double getElasticity(){return elasticity;} public void setElasticity(double v){elasticity(v);}
-    public boolean getLocked(){return locked;} public void setLocked(boolean v){locked(v);}
-    public int getShape(){return shape;} public void setShape(int v){shape(v);}
-
-    static int brickColorNumber(String name){
-        if(name==null)return 194; String n=name.toLowerCase(java.util.Locale.ROOT).replace("_"," ").trim();
-        return switch(n){case "bright red","red"->21;case "bright blue","blue"->23;case "bright green","green"->28;case "yellow"->24;case "white"->1;case "black"->26;case "dark stone grey","dark gray","dark grey"->199;case "medium stone grey","medium gray","medium grey"->194;case "orange"->105;case "purple","bright violet"->104;default->194;};
     }
 }
