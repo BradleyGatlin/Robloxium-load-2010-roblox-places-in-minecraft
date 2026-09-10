@@ -57,7 +57,7 @@ public final class RobloxPartRenderer {
     private static final String SURFACE_INLET="textures/2010/materials/surface_inlet.png";
     private static final String SURFACE_UNIVERSAL="textures/2010/materials/surface_universal.png";
 
-    private static final double DETAIL_DISTANCE_STUDS=45.0;
+    private static final double DETAIL_DISTANCE_STUDS=200.0;
 
     private static final SkyEnvironment SKY_ENVIRONMENT=SkyEnvironment.load();
 
@@ -1860,7 +1860,7 @@ public final class RobloxPartRenderer {
         float vTex=(float)(edgeV.length()/SURFACE_TILE_STUDS);
         Vec3 wn=n.normalized();
 
-        final double SURFACE_OFFSET_STUDS=0.0025;
+        final double SURFACE_OFFSET_STUDS=0.0005;
         Vec3 offset=expected.mul(SURFACE_OFFSET_STUDS);
         Vec3 wa=world(p,a.add(offset)), wb=world(p,bb.add(offset)),
              wc=world(p,c.add(offset)), wd=world(p,d.add(offset));
