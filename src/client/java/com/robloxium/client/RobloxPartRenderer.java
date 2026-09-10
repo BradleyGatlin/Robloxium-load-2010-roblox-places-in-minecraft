@@ -1288,7 +1288,7 @@ public final class RobloxPartRenderer {
             drawSphere(pose,b,p,col);
             return;
         }
-        double headScale = 1;
+        double headScale = 1.1;
         double sx = 0.5 * headScale * (p.size().x() * p.meshScale().x())/ Math.max(HEAD_MESH.half.x() * 2.0, 1e-9);
         double sy = headScale * (p.size().y() * p.meshScale().y())/ Math.max(HEAD_MESH.half.y() * 2.0, 1e-9);
         double sz = headScale * (p.size().z() * p.meshScale().z())/ Math.max(HEAD_MESH.half.z() * 2.0, 1e-9);
