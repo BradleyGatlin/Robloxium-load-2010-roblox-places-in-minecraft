@@ -14,20 +14,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
 
-/**
- * Stable Roblox player collision.
- *
- * The old implementation only tested the player's final AABB.  That means a
- * fast-moving player can move completely through a thin Roblox floor between
- * ticks.  This implementation sweeps the player's center from its previous
- * resolved position to its new position and collides against an AABB expanded
- * by the player's half extents.  The collision is therefore continuous for
- * the whole tick instead of being a discrete overlap test.
- *
- * Roblox parts are still represented by conservative world AABBs here.  That
- * keeps collision cheap and predictable while the renderer can use the exact
- * part transform for visuals.
- */
+
 final class RobloxPlayerCollision {
     private static final double MAX_DISTANCE_STUDS = 1096.0;
     private static final double EPS = 0.003;
@@ -93,8 +80,7 @@ final class RobloxPlayerCollision {
                 (playerBox.minZ + playerBox.maxZ) * 0.5
         );
 
-        // The first frame, or a real teleport, must not sweep from a stale
-        // position across the whole map.
+
         if (!previousPositionValid || distanceSquared(current.x(), current.y(), current.z(),
                 previousX, previousY, previousZ) > MAX_SWEEP_STUDS * MAX_SWEEP_STUDS) {
             previousX = current.x();
@@ -111,9 +97,7 @@ final class RobloxPlayerCollision {
         Vec3 collisionNormalA = null, collisionNormalB = null, collisionNormalC = null;
         Set<RobloxPart> nowTouching = Collections.newSetFromMap(new IdentityHashMap<>());
 
-        // Continuous collision / sliding.  Each pass finds the earliest hit
-        // along the remaining movement, moves to the contact point, then
-        // removes only the velocity/movement component going into that face.
+
         for (int pass = 0; pass < MAX_SWEEP_PASSES; pass++) {
             SweepHit hit = findEarliestHit(resolved, remaining, halfX, halfY, halfZ, nowTouching);
             if (hit == null) {
@@ -123,11 +107,7 @@ final class RobloxPlayerCollision {
 
             nowTouching.add(hit.part);
 
-            // Step up small Roblox Parts instead of stopping against their
-            // vertical face.  We only do this for a horizontal wall hit and
-            // only when the top of the Part is within the configured step
-            // height above the player's feet.  A head-clearance test prevents
-            // the solver from stepping the player into a low ceiling.
+
             if (Math.abs(hit.normal.y()) < 0.5) {
                 Vec3 stepped = tryStepUp(resolved, remaining, halfX, halfY, halfZ, hit.part);
                 if (stepped != null) {
@@ -144,9 +124,7 @@ final class RobloxPlayerCollision {
             double travel = Math.max(0.0, hit.t - EPS / Math.max(1.0, remainingLength(remaining)));
             resolved = resolved.add(remaining.mul(travel));
 
-            // Keep the player microscopically outside the surface.  This is
-            // enough to prevent re-colliding with the same plane without
-            // producing visible jitter.
+
             resolved = resolved.add(hit.normal.mul(EPS));
 
             if (hit.normal.y() > 0.5) grounded = true;
@@ -166,17 +144,14 @@ final class RobloxPlayerCollision {
             remaining = afterHit;
         }
 
-        // Sloped parts are convex ramps, not rectangular solids. Resolve the
-        // player's feet against their real sloped top after the sweep so the
-        // player follows the ramp instead of getting an invisible box wall.
+
         Vec3 slopeResolved = resolveSlopeSupport(resolved, halfX, halfY, halfZ, grounded, nowTouching);
         if (slopeResolved != null) {
             resolved = slopeResolved;
             grounded = true;
         }
 
-        // Resolve an already-overlapping spawn/teleport without allowing the
-        // old solver to accumulate corrections from every touching part.
+
         Penetration penetration = findDeepestPenetration(resolved, halfX, halfY, halfZ, nowTouching);
         if (penetration != null) {
             resolved = resolved.add(penetration.normal.mul(penetration.depth + EPS));
@@ -192,20 +167,12 @@ final class RobloxPlayerCollision {
                 + (mcResolved.y() - currentCenterY) * (mcResolved.y() - currentCenterY)
                 + (mcResolved.z() - currentCenterZ) * (mcResolved.z() - currentCenterZ);
         if (correctedDistanceSq > 1.0e-10) {
-            // mcResolved is the AABB CENTER. Entity#setPos expects the
-            // entity base/feet position, so only Y needs the half-height
-            // offset. Passing the center directly here was the source of the
-            // bad vertical collision behavior.
             double playerHalfHeightMc = (playerBox.maxY - playerBox.minY) * 0.5;
             player.setPos(mcResolved.x(), mcResolved.y() - playerHalfHeightMc, mcResolved.z());
         }
 
         net.minecraft.world.phys.Vec3 velocity = player.getDeltaMovement();
 
-        // Use the actual collision normals rather than blindly zeroing a
-        // whole velocity vector. This lets the player slide along walls and
-        // prevents the next vanilla movement tick from pushing back into a
-        // wall/floor and causing visible jitter.
         if (collisionNormalA != null) velocity = projectOutVelocity(velocity, collisionNormalA);
         if (collisionNormalB != null) velocity = projectOutVelocity(velocity, collisionNormalB);
         if (collisionNormalC != null) velocity = projectOutVelocity(velocity, collisionNormalC);
@@ -269,7 +236,7 @@ final class RobloxPlayerCollision {
         // First make sure the raised player has room above the step.
         for (RobloxPart part : COLLIDERS) {
             if (!part.canCollide() || part.transparency() >= 1 || part == obstacle) continue;
-            if (aabbOverlaps(center.x(), newCenterY, center.z(), hx, hy, hz, partBounds(part))) return null;
+            if (orientedOverlaps(center.x(), newCenterY, center.z(), hx, hy, hz, part)) return null;
         }
 
         // Then make sure the intended horizontal movement is clear at the
@@ -279,18 +246,22 @@ final class RobloxPlayerCollision {
         double testZ = center.z() + remaining.z();
         for (RobloxPart part : COLLIDERS) {
             if (!part.canCollide() || part.transparency() >= 1 || part == obstacle) continue;
-            if (aabbOverlaps(testX, newCenterY, testZ, hx, hy, hz, partBounds(part))) return null;
+            if (orientedOverlaps(testX, newCenterY, testZ, hx, hy, hz, part)) return null;
         }
 
         // Lift to the top and preserve the horizontal remainder.
         return new Vec3(center.x(), newCenterY, center.z());
     }
 
-    private static boolean aabbOverlaps(double centerX, double centerY, double centerZ,
-                                        double hx, double hy, double hz, AABB b) {
-        return centerX + hx > b.minX + EPS && centerX - hx < b.maxX - EPS
-                && centerY + hy > b.minY + EPS && centerY - hy < b.maxY - EPS
-                && centerZ + hz > b.minZ + EPS && centerZ - hz < b.maxZ - EPS;
+    private static boolean orientedOverlaps(double centerX, double centerY, double centerZ,
+                                            double hx, double hy, double hz, RobloxPart part) {
+        CFrameData cf = CFrameData.of(part);
+        Vec3 local = cf.toLocal(new Vec3(centerX, centerY, centerZ));
+        Vec3 half = partLocalHalf(part);
+        Vec3 ph = playerLocalHalf(cf.rotation(), hx, hy, hz);
+        return local.x() + ph.x() > -half.x() + EPS && local.x() - ph.x() < half.x() - EPS
+                && local.y() + ph.y() > -half.y() + EPS && local.y() - ph.y() < half.y() - EPS
+                && local.z() + ph.z() > -half.z() + EPS && local.z() - ph.z() < half.z() - EPS;
     }
 
     private static SweepHit findEarliestHit(Vec3 start, Vec3 delta,
@@ -310,7 +281,7 @@ final class RobloxPlayerCollision {
             // into a solid vertical wall.
             if (isSlope(part)) continue;
 
-            SweepHit hit = sweepPointAgainstExpandedBox(start, delta, bounds, hx, hy, hz, part);
+            SweepHit hit = sweepPointAgainstOrientedBox(start, delta, part, hx, hy, hz);
             if (hit != null && (best == null || hit.t < best.t)) best = hit;
         }
         return best;
@@ -420,16 +391,22 @@ final class RobloxPlayerCollision {
         }
         Vec3 toLocal(Vec3 world) {
             Vec3 d = world.sub(position);
-            return new Vec3(
-                    rotation[0][0] * d.x() + rotation[1][0] * d.y() + rotation[2][0] * d.z(),
-                    rotation[0][1] * d.x() + rotation[1][1] * d.y() + rotation[2][1] * d.z(),
-                    rotation[0][2] * d.x() + rotation[1][2] * d.y() + rotation[2][2] * d.z());
+            return rotateInverse(d);
         }
         Vec3 toWorld(Vec3 local) {
-            return position.add(new Vec3(
+            return position.add(rotate(local));
+        }
+        Vec3 rotate(Vec3 local) {
+            return new Vec3(
                     rotation[0][0] * local.x() + rotation[0][1] * local.y() + rotation[0][2] * local.z(),
                     rotation[1][0] * local.x() + rotation[1][1] * local.y() + rotation[1][2] * local.z(),
-                    rotation[2][0] * local.x() + rotation[2][1] * local.y() + rotation[2][2] * local.z()));
+                    rotation[2][0] * local.x() + rotation[2][1] * local.y() + rotation[2][2] * local.z());
+        }
+        Vec3 rotateInverse(Vec3 world) {
+            return new Vec3(
+                    rotation[0][0] * world.x() + rotation[1][0] * world.y() + rotation[2][0] * world.z(),
+                    rotation[0][1] * world.x() + rotation[1][1] * world.y() + rotation[2][1] * world.z(),
+                    rotation[0][2] * world.x() + rotation[1][2] * world.y() + rotation[2][2] * world.z());
         }
     }
 
@@ -448,69 +425,97 @@ final class RobloxPlayerCollision {
         Penetration best = null;
         for (RobloxPart part : COLLIDERS) {
             if (!part.canCollide() || part.transparency() >= 1 || isSlope(part)) continue;
-            AABB b = partBounds(part);
-            double minX = b.minX - hx, maxX = b.maxX + hx;
-            double minY = b.minY - hy, maxY = b.maxY + hy;
-            double minZ = b.minZ - hz, maxZ = b.maxZ + hz;
 
-            double ox = Math.min(center.x(), maxX) - Math.max(center.x(), minX);
-            double oy = Math.min(center.y(), maxY) - Math.max(center.y(), minY);
-            double oz = Math.min(center.z(), maxZ) - Math.max(center.z(), minZ);
+            CFrameData cf = CFrameData.of(part);
+            Vec3 local = cf.toLocal(center);
+            Vec3 half = partLocalHalf(part);
+            Vec3 ph = playerLocalHalf(cf.rotation(), hx, hy, hz);
+
+            double minX = -half.x() - ph.x(), maxX = half.x() + ph.x();
+            double minY = -half.y() - ph.y(), maxY = half.y() + ph.y();
+            double minZ = -half.z() - ph.z(), maxZ = half.z() + ph.z();
+
+            double ox = Math.min(local.x(), maxX) - Math.max(local.x(), minX);
+            double oy = Math.min(local.y(), maxY) - Math.max(local.y(), minY);
+            double oz = Math.min(local.z(), maxZ) - Math.max(local.z(), minZ);
             if (ox <= EPS || oy <= EPS || oz <= EPS) continue;
 
             double depth = ox;
-            Vec3 normal = new Vec3(center.x() >= (minX + maxX) * .5 ? 1 : -1, 0, 0);
+            Vec3 localNormal = new Vec3(local.x() >= 0.0 ? 1 : -1, 0, 0);
             if (oy < depth) {
                 depth = oy;
-                normal = new Vec3(0, center.y() >= (minY + maxY) * .5 ? 1 : -1, 0);
+                localNormal = new Vec3(0, local.y() >= 0.0 ? 1 : -1, 0);
             }
             if (oz < depth) {
                 depth = oz;
-                normal = new Vec3(0, 0, center.z() >= (minZ + maxZ) * .5 ? 1 : -1);
+                localNormal = new Vec3(0, 0, local.z() >= 0.0 ? 1 : -1);
             }
 
             touching.add(part);
-            if (best == null || depth < best.depth) best = new Penetration(part, depth, normal);
+            Vec3 worldNormal = cf.rotate(localNormal);
+            if (best == null || depth < best.depth) best = new Penetration(part, depth, worldNormal);
         }
         return best;
     }
 
-    private static SweepHit sweepPointAgainstExpandedBox(Vec3 start, Vec3 delta, AABB bounds,
-                                                          double hx, double hy, double hz,
-                                                          RobloxPart part) {
-        double minX = bounds.minX - hx - EPS, maxX = bounds.maxX + hx + EPS;
-        double minY = bounds.minY - hy - EPS, maxY = bounds.maxY + hy + EPS;
-        double minZ = bounds.minZ - hz - EPS, maxZ = bounds.maxZ + hz + EPS;
+    private static SweepHit sweepPointAgainstOrientedBox(Vec3 start, Vec3 delta, RobloxPart part,
+                                                         double hx, double hy, double hz) {
+        CFrameData cf = CFrameData.of(part);
+        Vec3 localStart = cf.toLocal(start);
+        Vec3 localDelta = cf.rotateInverse(delta);
+        Vec3 half = partLocalHalf(part);
+        Vec3 ph = playerLocalHalf(cf.rotation(), hx, hy, hz);
+
+        double minX = -half.x() - ph.x() - EPS, maxX = half.x() + ph.x() + EPS;
+        double minY = -half.y() - ph.y() - EPS, maxY = half.y() + ph.y() + EPS;
+        double minZ = -half.z() - ph.z() - EPS, maxZ = half.z() + ph.z() + EPS;
 
         double tEnter = 0.0;
         double tExit = 1.0;
-        Vec3 enterNormal = new Vec3(0, 0, 0);
+        Vec3 enterNormalLocal = new Vec3(0, 0, 0);
 
-        double[] result = slab(start.x(), delta.x(), minX, maxX, tEnter, tExit);
+        double[] result = slab(localStart.x(), localDelta.x(), minX, maxX, tEnter, tExit);
         if (result == null) return null;
         double oldEnter = tEnter;
         tEnter = result[0]; tExit = result[1];
-        if (result[2] != 0 && result[3] >= oldEnter - 1.0e-12) enterNormal = new Vec3(result[2], 0, 0);
+        if (result[2] != 0 && result[3] >= oldEnter - 1.0e-12) enterNormalLocal = new Vec3(result[2], 0, 0);
 
-        result = slab(start.y(), delta.y(), minY, maxY, tEnter, tExit);
+        result = slab(localStart.y(), localDelta.y(), minY, maxY, tEnter, tExit);
         if (result == null) return null;
         oldEnter = tEnter;
         tEnter = result[0]; tExit = result[1];
-        if (result[2] != 0 && result[3] >= oldEnter - 1.0e-12) enterNormal = new Vec3(0, result[2], 0);
+        if (result[2] != 0 && result[3] >= oldEnter - 1.0e-12) enterNormalLocal = new Vec3(0, result[2], 0);
 
-        result = slab(start.z(), delta.z(), minZ, maxZ, tEnter, tExit);
+        result = slab(localStart.z(), localDelta.z(), minZ, maxZ, tEnter, tExit);
         if (result == null) return null;
         oldEnter = tEnter;
         tEnter = result[0]; tExit = result[1];
-        if (result[2] != 0 && result[3] >= oldEnter - 1.0e-12) enterNormal = new Vec3(0, 0, result[2]);
+        if (result[2] != 0 && result[3] >= oldEnter - 1.0e-12) enterNormalLocal = new Vec3(0, 0, result[2]);
 
         if (tEnter > tExit || tExit < 0.0 || tEnter > 1.0) return null;
 
         // If already inside, don't use a zero-length sweep hit.  The
         // penetration pass below gives this case a stable minimal correction.
-        if (tEnter <= EPS && pointInsideExpanded(start, minX, maxX, minY, maxY, minZ, maxZ)) return null;
+        if (tEnter <= EPS && pointInsideExpanded(localStart, minX, maxX, minY, maxY, minZ, maxZ)) return null;
 
-        return new SweepHit(part, Math.max(0.0, tEnter), enterNormal);
+        return new SweepHit(part, Math.max(0.0, tEnter), cf.rotate(enterNormalLocal));
+    }
+
+    private static Vec3 partLocalHalf(RobloxPart p) {
+        return new Vec3(Math.abs(p.size().x()) * .5, Math.abs(p.size().y()) * .5, Math.abs(p.size().z()) * .5);
+    }
+
+    /**
+     * World-axis player AABB expressed as an enclosing AABB in the part's
+     * local space.  Expanding the part by this amount lets the existing
+     * slab sweep run against a rotated box.
+     */
+    private static Vec3 playerLocalHalf(double[][] r, double hx, double hy, double hz) {
+        return new Vec3(
+                Math.abs(r[0][0]) * hx + Math.abs(r[1][0]) * hy + Math.abs(r[2][0]) * hz,
+                Math.abs(r[0][1]) * hx + Math.abs(r[1][1]) * hy + Math.abs(r[2][1]) * hz,
+                Math.abs(r[0][2]) * hx + Math.abs(r[1][2]) * hy + Math.abs(r[2][2]) * hz
+        );
     }
 
     /** Returns {enter, exit, normalSign}. */
