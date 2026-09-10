@@ -104,31 +104,7 @@ public final class RobloxPartRenderer {
     private static boolean registered;
 
     private static final String VULKAN_BACKEND_NAME="vulkan";
-    private static Boolean IRIS_PRESENT;
-    private static boolean irisPresent(){
-        if(IRIS_PRESENT!=null)return IRIS_PRESENT;
-        boolean present=false;
-        try{
-            Class<?> loader=Class.forName("net.fabricmc.loader.api.FabricLoader");
-            Object inst=loader.getMethod("getInstance").invoke(null);
-            present=(Boolean)loader.getMethod("isModLoaded",String.class).invoke(inst,"iris");
-        }catch(Throwable ignored){}
-        IRIS_PRESENT=present;
-        return present;
-    }
-    private static boolean irisShadersActive(){
-        if(!irisPresent())return false;
-        try{
-            Class<?> api=Class.forName("net.irisshaders.iris.api.v0.IrisApi");
-            Object inst=api.getMethod("getInstance").invoke(null);
-            return Boolean.TRUE.equals(api.getMethod("isShaderPackInUse").invoke(inst));
-        }catch(Throwable ignored){
-            return true;
-        }
-    }
     private static void requireVulkanBackend(){
-
-        if(irisPresent())return;
         String backend;
         try{
             backend=RenderSystem.getDevice().getDeviceInfo().backendName();
