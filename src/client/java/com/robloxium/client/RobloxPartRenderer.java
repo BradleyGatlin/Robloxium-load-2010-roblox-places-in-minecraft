@@ -1288,10 +1288,10 @@ public final class RobloxPartRenderer {
             drawSphere(pose,b,p,col);
             return;
         }
-        double headScale=1;
-        double sx=headScale*(p.size().x()*p.meshScale().x())/Math.max(HEAD_MESH.half.x()*2.0,1e-9);
-        double sy=headScale*(p.size().y()*p.meshScale().y())/Math.max(HEAD_MESH.half.y()*2.0,1e-9);
-        double sz=headScale*(p.size().z()*p.meshScale().z())/Math.max(HEAD_MESH.half.z()*2.0,1e-9);
+        double headScale = 1;
+        double sx = 0.5 * headScale * (p.size().x() * p.meshScale().x())/ Math.max(HEAD_MESH.half.x() * 2.0, 1e-9);
+        double sy = headScale * (p.size().y() * p.meshScale().y())/ Math.max(HEAD_MESH.half.y() * 2.0, 1e-9);
+        double sz = headScale * (p.size().z() * p.meshScale().z())/ Math.max(HEAD_MESH.half.z() * 2.0, 1e-9);
         Vec3 off=p.meshOffset();
         for(int i=0;i<HEAD_MESH.positions.length;i+=3){
             Vec3 a=HEAD_MESH.positions[i], bb=HEAD_MESH.positions[i+1], c=HEAD_MESH.positions[i+2];
