@@ -51,7 +51,8 @@ public final class RobloxPartRenderer {
         };
     }
 
-    private static final double SURFACE_TILE_STUDS=3.0;
+    // Classic 2010 stud/inlet/universal maps tile every 2 studs (2x2 in the PNG).
+    private static final double SURFACE_TILE_STUDS=2.0;
     private static final Map<Identifier,RenderType> REPEAT_TEXTURE_TYPES=new HashMap<>();
     private static final String SURFACE_STUDS="textures/2010/materials/surface_studs.png";
     private static final String SURFACE_INLET="textures/2010/materials/surface_inlet.png";
@@ -1862,36 +1863,77 @@ public final class RobloxPartRenderer {
     }
     private static void drawSurfaceType(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,int type){
         int c=0xFFFFFFFF;
-        double hx=p.size().x()/2,hy=p.size().y()/2,hz=p.size().z()/2;
-        if(p.topSurface()==type)surfaceQuad(pose,b,p,new Vec3(-hx,hy,hz),new Vec3(hx,hy,hz),new Vec3(hx,hy,-hz),new Vec3(-hx,hy,-hz),0,1,0,c);
-        if(p.bottomSurface()==type)surfaceQuad(pose,b,p,new Vec3(-hx,-hy,-hz),new Vec3(hx,-hy,-hz),new Vec3(hx,-hy,hz),new Vec3(-hx,-hy,hz),0,-1,0,c);
-        if(p.frontSurface()==type)surfaceQuad(pose,b,p,new Vec3(-hx,-hy,hz),new Vec3(hx,-hy,hz),new Vec3(hx,hy,hz),new Vec3(-hx,hy,hz),0,0,1,c);
-        if(p.backSurface()==type)surfaceQuad(pose,b,p,new Vec3(hx,-hy,-hz),new Vec3(-hx,-hy,-hz),new Vec3(-hx,hy,-hz),new Vec3(hx,hy,-hz),0,0,-1,c);
-        if(p.leftSurface()==type)surfaceQuad(pose,b,p,new Vec3(-hx,-hy,-hz),new Vec3(-hx,-hy,hz),new Vec3(-hx,hy,hz),new Vec3(-hx,hy,-hz),-1,0,0,c);
-        if(p.rightSurface()==type)surfaceQuad(pose,b,p,new Vec3(hx,-hy,hz),new Vec3(hx,-hy,-hz),new Vec3(hx,hy,-hz),new Vec3(hx,hy,hz),1,0,0,c);
+        // Match the drawn brick, including SpecialMesh/FileMesh scale.
+        Vec3 size=p.size(),mesh=p.meshScale();
+        double hx=Math.abs(size.x()*mesh.x())*.5;
+        double hy=Math.abs(size.y()*mesh.y())*.5;
+        double hz=Math.abs(size.z()*mesh.z())*.5;
+        // Roblox NormalId: Right=+X, Top=+Y, Back=+Z, Left=-X, Bottom=-Y, Front=-Z.
+        // Previous front/back mapping was swapped, so side overlays never landed on the
+        // face the place file actually marked.
+        if(p.topSurface()==type)
+            surfaceQuad(pose,b,p,
+                new Vec3(-hx,hy,-hz),new Vec3(hx,hy,-hz),new Vec3(hx,hy,hz),new Vec3(-hx,hy,hz),
+                new Vec3(0,1,0),new Vec3(1,0,0),new Vec3(0,0,1),c);
+        if(p.bottomSurface()==type)
+            surfaceQuad(pose,b,p,
+                new Vec3(-hx,-hy,hz),new Vec3(hx,-hy,hz),new Vec3(hx,-hy,-hz),new Vec3(-hx,-hy,-hz),
+                new Vec3(0,-1,0),new Vec3(1,0,0),new Vec3(0,0,-1),c);
+        if(p.frontSurface()==type)
+            surfaceQuad(pose,b,p,
+                new Vec3(hx,-hy,-hz),new Vec3(-hx,-hy,-hz),new Vec3(-hx,hy,-hz),new Vec3(hx,hy,-hz),
+                new Vec3(0,0,-1),new Vec3(-1,0,0),new Vec3(0,1,0),c);
+        if(p.backSurface()==type)
+            surfaceQuad(pose,b,p,
+                new Vec3(-hx,-hy,hz),new Vec3(hx,-hy,hz),new Vec3(hx,hy,hz),new Vec3(-hx,hy,hz),
+                new Vec3(0,0,1),new Vec3(1,0,0),new Vec3(0,1,0),c);
+        if(p.leftSurface()==type)
+            surfaceQuad(pose,b,p,
+                new Vec3(-hx,-hy,-hz),new Vec3(-hx,-hy,hz),new Vec3(-hx,hy,hz),new Vec3(-hx,hy,-hz),
+                new Vec3(-1,0,0),new Vec3(0,0,1),new Vec3(0,1,0),c);
+        if(p.rightSurface()==type)
+            surfaceQuad(pose,b,p,
+                new Vec3(hx,-hy,hz),new Vec3(hx,-hy,-hz),new Vec3(hx,hy,-hz),new Vec3(hx,hy,hz),
+                new Vec3(1,0,0),new Vec3(0,0,-1),new Vec3(0,1,0),c);
     }
-    private static void surfaceQuad(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,Vec3 a,Vec3 bb,Vec3 c,Vec3 d,float nx,float ny,float nz,int color){
-        Vec3 expected=new Vec3(nx,ny,nz).normalized();
-        Vec3 geometric=bb.sub(a).cross(c.sub(a)).normalized();
-        if(geometric.dot(expected)<0){Vec3 swap=bb;bb=d;d=swap;}
-        double[][]r=p.cframe().rotation();
-        Vec3 n=new Vec3(r[0][0]*nx+r[0][1]*ny+r[0][2]*nz,r[1][0]*nx+r[1][1]*ny+r[1][2]*nz,r[2][0]*nx+r[2][1]*ny+r[2][2]*nz);
-        Vec3 edgeU=bb.sub(a),edgeV=d.sub(a);
-        float uTex=(float)(edgeU.length()/SURFACE_TILE_STUDS);
-        float vTex=(float)(edgeV.length()/SURFACE_TILE_STUDS);
-        Vec3 wn=n.normalized();
+    private static void surfaceQuad(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,
+                                    Vec3 a,Vec3 bb,Vec3 c,Vec3 d,
+                                    Vec3 localNormal,Vec3 localU,Vec3 localV,int color){
+        Vec3 expected=localNormal.normalized();
+        Vec3 uDir=localU.normalized();
+        Vec3 vDir=localV.normalized();
+        // Keep winding consistent with the requested face normal without swapping U/V.
+        Vec3 geometric=bb.sub(a).cross(d.sub(a));
+        if(geometric.dot(expected)<0){
+            Vec3 swap=bb;bb=d;d=swap;
+        }
+        Vec3 n=worldNormal(p,expected);
+        // Project each corner onto the face axes so U and V stay square in studs.
+        // V runs along the face's "up" (part +Y on sides), which stops the old
+        // downward stretch from using the wrong edge as the vertical tile axis.
+        float ua=surfaceUv(a,a,uDir), va=surfaceUv(a,a,vDir);
+        float ub=surfaceUv(bb,a,uDir), vb=surfaceUv(bb,a,vDir);
+        float uc=surfaceUv(c,a,uDir), vc=surfaceUv(c,a,vDir);
+        float ud=surfaceUv(d,a,uDir), vd=surfaceUv(d,a,vDir);
+        // Flip V so texture-space V=0 is the top of the face (Minecraft/GL convention).
+        float vMax=Math.max(Math.max(va,vb),Math.max(vc,vd));
+        va=vMax-va; vb=vMax-vb; vc=vMax-vc; vd=vMax-vd;
 
-        final double SURFACE_OFFSET_STUDS=0.0005;
+        final double SURFACE_OFFSET_STUDS=0.02;
         Vec3 offset=expected.mul(SURFACE_OFFSET_STUDS);
         Vec3 wa=world(p,a.add(offset)), wb=world(p,bb.add(offset)),
              wc=world(p,c.add(offset)), wd=world(p,d.add(offset));
-        int ra=reflect(color,p.reflectance(),wa,wn), rb=reflect(color,p.reflectance(),wb,wn), rc=reflect(color,p.reflectance(),wc,wn), rd=reflect(color,p.reflectance(),wd,wn);
-        vertexSurface(pose,b,wa,ra,0,vTex,n,p);
-        vertexSurface(pose,b,wb,rb,uTex,vTex,n,p);
-        vertexSurface(pose,b,wc,rc,uTex,0,n,p);
-        vertexSurface(pose,b,wc,rc,uTex,0,n,p);
-        vertexSurface(pose,b,wd,rd,0,0,n,p);
-        vertexSurface(pose,b,wa,ra,0,vTex,n,p);
+        int ra=reflect(color,p.reflectance(),wa,n), rb=reflect(color,p.reflectance(),wb,n),
+            rc=reflect(color,p.reflectance(),wc,n), rd=reflect(color,p.reflectance(),wd,n);
+        vertexSurface(pose,b,wa,ra,ua,va,n,p);
+        vertexSurface(pose,b,wb,rb,ub,vb,n,p);
+        vertexSurface(pose,b,wc,rc,uc,vc,n,p);
+        vertexSurface(pose,b,wc,rc,uc,vc,n,p);
+        vertexSurface(pose,b,wd,rd,ud,vd,n,p);
+        vertexSurface(pose,b,wa,ra,ua,va,n,p);
+    }
+    private static float surfaceUv(Vec3 point,Vec3 origin,Vec3 axis){
+        return (float)(point.sub(origin).dot(axis)/SURFACE_TILE_STUDS);
     }
 
     private static final class SkyEnvironment {
