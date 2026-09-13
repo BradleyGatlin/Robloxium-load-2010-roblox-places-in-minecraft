@@ -2021,13 +2021,9 @@ public final class RobloxPartRenderer {
 
     private static RenderPipeline.Builder withTranslucentBlend(RenderPipeline.Builder builder){
         try{
-            return builder.withBlend(BlendFunction.TRANSLUCENT);
+            return builder.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT));
         }catch(Throwable ignored){
-            try{
-                return builder.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT));
-            }catch(Throwable ignored2){
-                return builder;
-            }
+            return builder;
         }
     }
 
