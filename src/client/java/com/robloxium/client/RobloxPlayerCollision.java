@@ -14,7 +14,6 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
 
-
 final class RobloxPlayerCollision {
     private static final double MAX_DISTANCE_STUDS = 1096.0;
     private static final double EPS = 0.003;
@@ -25,28 +24,26 @@ final class RobloxPlayerCollision {
     private static final double STEP_CLEARANCE = 0.03;
     private static final double MAX_SWEEP_STUDS = 192.0;
     private static final int MAX_SWEEP_PASSES = 6;
-
     private static final Set<RobloxPart> TOUCHING =
             Collections.newSetFromMap(new IdentityHashMap<>());
-
     private static final List<RobloxPart> COLLIDERS = new ArrayList<>();
     private static int lastPartCount = -1;
     private static RobloxGame cachedGame;
     private static LocalPlayer trackedPlayer;
-
     private static boolean previousPositionValid;
     private static double previousX, previousY, previousZ;
-
+    // Last tick's player AABB half-extents in Roblox studs. Used so a sneak /
+    // crawl / stand pose change keeps the feet planted instead of looking like
+    // a downward (or upward) sweep into the floor or ceiling.
+    private static double previousHalfX, previousHalfY, previousHalfZ;
     private static float lastMinecraftHealth = 20f, lastRobloxHealth = 100f;
 
     private RobloxPlayerCollision() {}
 
     static void resolve(Minecraft mc, RobloxGame game) {
         if (mc == null || game == null || !game.running() || mc.player == null) return;
-
         LocalPlayer player = mc.player;
         AABB playerBox = player.getBoundingBox();
-
         // The Minecraft entity position is the player's feet/base, while the
         // sweep operates on the center of the AABB. Reset state whenever the
         // active player or Roblox place changes so an old center is never
@@ -58,7 +55,6 @@ final class RobloxPlayerCollision {
             COLLIDERS.clear();
             lastPartCount = -1;
         }
-
         // Build the collision list only once per tick.  The old code called
         // workspace().parts() on every solver pass, repeatedly walking the
         // entire Roblox instance tree.
@@ -69,26 +65,30 @@ final class RobloxPlayerCollision {
             COLLIDERS.addAll(workspaceParts);
             lastPartCount = workspaceParts.size();
         }
-
         double halfX = RobloxCoordinateSpace.toRoblox((playerBox.maxX - playerBox.minX) * 0.5);
         double halfY = RobloxCoordinateSpace.toRoblox((playerBox.maxY - playerBox.minY) * 0.5);
         double halfZ = RobloxCoordinateSpace.toRoblox((playerBox.maxZ - playerBox.minZ) * 0.5);
-
         Vec3 current = toRoblox(
                 (playerBox.minX + playerBox.maxX) * 0.5,
                 (playerBox.minY + playerBox.maxY) * 0.5,
                 (playerBox.minZ + playerBox.maxZ) * 0.5
         );
-
-
         if (!previousPositionValid || distanceSquared(current.x(), current.y(), current.z(),
                 previousX, previousY, previousZ) > MAX_SWEEP_STUDS * MAX_SWEEP_STUDS) {
             previousX = current.x();
             previousY = current.y();
             previousZ = current.z();
+            previousHalfX = halfX;
+            previousHalfY = halfY;
+            previousHalfZ = halfZ;
             previousPositionValid = true;
+        } else {
+            // Pose changes (crouch / stand / crawl) shrink or grow the AABB
+            // around the feet in Minecraft. The stored sweep point is the
+            // AABB center, so a crouch would otherwise look like a fall into
+            // the floor and standing up would look like a jump into a ceiling.
+            retargetPreviousCenterToCurrentPose(halfX, halfY, halfZ);
         }
-
         Vec3 start = new Vec3(previousX, previousY, previousZ);
         Vec3 end = current;
         Vec3 resolved = start;
@@ -96,18 +96,13 @@ final class RobloxPlayerCollision {
         boolean grounded = false;
         Vec3 collisionNormalA = null, collisionNormalB = null, collisionNormalC = null;
         Set<RobloxPart> nowTouching = Collections.newSetFromMap(new IdentityHashMap<>());
-
-
         for (int pass = 0; pass < MAX_SWEEP_PASSES; pass++) {
             SweepHit hit = findEarliestHit(resolved, remaining, halfX, halfY, halfZ, nowTouching);
             if (hit == null) {
                 resolved = resolved.add(remaining);
                 break;
             }
-
             nowTouching.add(hit.part);
-
-
             if (Math.abs(hit.normal.y()) < 0.5) {
                 Vec3 stepped = tryStepUp(resolved, remaining, halfX, halfY, halfZ, hit.part);
                 if (stepped != null) {
@@ -116,26 +111,19 @@ final class RobloxPlayerCollision {
                     continue;
                 }
             }
-
             if (collisionNormalA == null) collisionNormalA = hit.normal;
             else if (!sameAxis(collisionNormalA, hit.normal) && collisionNormalB == null) collisionNormalB = hit.normal;
             else if (!sameAxis(collisionNormalA, hit.normal) && (collisionNormalB == null || !sameAxis(collisionNormalB, hit.normal)) && collisionNormalC == null) collisionNormalC = hit.normal;
-
             double travel = Math.max(0.0, hit.t - EPS / Math.max(1.0, remainingLength(remaining)));
             resolved = resolved.add(remaining.mul(travel));
-
-
             resolved = resolved.add(hit.normal.mul(EPS));
-
             if (hit.normal.y() > 0.5) grounded = true;
-
             double left = Math.max(0.0, 1.0 - hit.t);
             Vec3 afterHit = remaining.mul(left);
             double into = afterHit.dot(hit.normal);
             if (into < 0.0) {
                 afterHit = afterHit.sub(hit.normal.mul(into));
             }
-
             // If there is effectively no movement left, finish here.
             if (remainingLength(afterHit) < EPS) {
                 remaining = new Vec3(0, 0, 0);
@@ -143,21 +131,16 @@ final class RobloxPlayerCollision {
             }
             remaining = afterHit;
         }
-
-
         Vec3 slopeResolved = resolveSlopeSupport(resolved, halfX, halfY, halfZ, grounded, nowTouching);
         if (slopeResolved != null) {
             resolved = slopeResolved;
             grounded = true;
         }
-
-
         Penetration penetration = findDeepestPenetration(resolved, halfX, halfY, halfZ, nowTouching);
         if (penetration != null) {
             resolved = resolved.add(penetration.normal.mul(penetration.depth + EPS));
             if (penetration.normal.y() > 0.5) grounded = true;
         }
-
         // Convert the resolved Roblox center back to Minecraft coordinates.
         Vec3 mcResolved = toMinecraftWorld(resolved);
         double currentCenterX = (playerBox.minX + playerBox.maxX) * 0.5;
@@ -170,38 +153,33 @@ final class RobloxPlayerCollision {
             double playerHalfHeightMc = (playerBox.maxY - playerBox.minY) * 0.5;
             player.setPos(mcResolved.x(), mcResolved.y() - playerHalfHeightMc, mcResolved.z());
         }
-
         net.minecraft.world.phys.Vec3 velocity = player.getDeltaMovement();
-
         if (collisionNormalA != null) velocity = projectOutVelocity(velocity, collisionNormalA);
         if (collisionNormalB != null) velocity = projectOutVelocity(velocity, collisionNormalB);
         if (collisionNormalC != null) velocity = projectOutVelocity(velocity, collisionNormalC);
-
         // A tiny downward probe handles the resting-contact case where the
         // player did not move this tick but is exactly on top of a Roblox part.
         SweepHit velocityHit = findVelocityCollision(resolved, halfX, halfY, halfZ, nowTouching);
         if (velocityHit != null && velocityHit.normal.y() > 0.5) grounded = true;
         if (velocityHit != null) velocity = projectOutVelocity(velocity, velocityHit.normal);
-
         if (grounded) {
             velocity = new net.minecraft.world.phys.Vec3(velocity.x, Math.max(0.0, velocity.y), velocity.z);
             player.setOnGround(true);
             player.resetFallDistance();
         }
         player.setDeltaMovement(velocity);
-
         for (RobloxPart part : nowTouching) {
             if (!TOUCHING.contains(part)) game.firePlayerTouched(part, player);
         }
         TOUCHING.retainAll(nowTouching);
         TOUCHING.addAll(nowTouching);
-
         previousX = resolved.x();
         previousY = resolved.y();
         previousZ = resolved.z();
-
+        previousHalfX = halfX;
+        previousHalfY = halfY;
+        previousHalfZ = halfZ;
         game.playersService().updatePosition(toRoblox(player.getX(), player.getY(), player.getZ()));
-
         float robloxHealth = (float) game.playersService().localPlayer().character().humanoid().health();
         if (Math.abs(robloxHealth - lastRobloxHealth) > 0.001f) {
             player.setHealth(Math.max(0, Math.min(player.getMaxHealth(), robloxHealth)));
@@ -213,16 +191,32 @@ final class RobloxPlayerCollision {
         lastRobloxHealth = robloxHealth;
     }
 
+    /**
+     * Keep the player's feet (and horizontal center) where they were when the
+     * Minecraft pose changes the AABB size. The solver stores an AABB center,
+     * so half-extent changes have to be applied to that center or a crouch is
+     * swept straight into the floor.
+     */
+    private static void retargetPreviousCenterToCurrentPose(double halfX, double halfY, double halfZ) {
+        if (previousHalfY > EPS) {
+            previousY = previousY - previousHalfY + halfY;
+        }
+        // Width almost never changes on sneak, but crawl / swim poses can.
+        // Keep the horizontal center; only the half-extents used by the sweep
+        // should change.
+        previousHalfX = halfX;
+        previousHalfY = halfY;
+        previousHalfZ = halfZ;
+    }
+
     private static Vec3 tryStepUp(Vec3 center, Vec3 remaining,
                                    double hx, double hy, double hz,
                                    RobloxPart obstacle) {
         if (remainingLength(remaining) < EPS || remaining.y() > CONTACT_EPS) return null;
-
         AABB b = partBounds(obstacle);
         double feet = center.y() - hy;
         double rise = b.maxY - feet;
         if (rise < 0.0 || rise > STEP_HEIGHT_STUDS + STEP_CLEARANCE) return null;
-
         double endX = center.x() + remaining.x();
         double endZ = center.z() + remaining.z();
         double minX = Math.min(center.x(), endX) - hx;
@@ -230,15 +224,12 @@ final class RobloxPlayerCollision {
         double minZ = Math.min(center.z(), endZ) - hz;
         double maxZ = Math.max(center.z(), endZ) + hz;
         if (maxX < b.minX || minX > b.maxX || maxZ < b.minZ || minZ > b.maxZ) return null;
-
         double newCenterY = b.maxY + hy + STEP_CLEARANCE;
-
         // First make sure the raised player has room above the step.
         for (RobloxPart part : COLLIDERS) {
             if (!part.canCollide() || part.transparency() >= 1 || part == obstacle) continue;
             if (orientedOverlaps(center.x(), newCenterY, center.z(), hx, hy, hz, part)) return null;
         }
-
         // Then make sure the intended horizontal movement is clear at the
         // raised height. This prevents tall blocks from becoming climbable
         // merely because their bottom face is near the player's feet.
@@ -248,7 +239,6 @@ final class RobloxPlayerCollision {
             if (!part.canCollide() || part.transparency() >= 1 || part == obstacle) continue;
             if (orientedOverlaps(testX, newCenterY, testZ, hx, hy, hz, part)) return null;
         }
-
         // Lift to the top and preserve the horizontal remainder.
         return new Vec3(center.x(), newCenterY, center.z());
     }
@@ -268,19 +258,15 @@ final class RobloxPlayerCollision {
                                             double hx, double hy, double hz,
                                             Set<RobloxPart> touching) {
         if (remainingLength(delta) < EPS) return null;
-
         SweepHit best = null;
         for (RobloxPart part : COLLIDERS) {
             if (!part.canCollide() || part.transparency() >= 1) continue;
-
             AABB bounds = partBounds(part);
             if (!nearby(start, delta, bounds, hx, hy, hz)) continue;
-
             // Wedges are handled by the sloped-support solver below. Using
             // their enclosing box here would turn the low end of every ramp
             // into a solid vertical wall.
             if (isSlope(part)) continue;
-
             SweepHit hit = sweepPointAgainstOrientedBox(start, delta, part, hx, hy, hz);
             if (hit != null && (best == null || hit.t < best.t)) best = hit;
         }
@@ -305,27 +291,21 @@ final class RobloxPlayerCollision {
                                             boolean wasGrounded, Set<RobloxPart> touching) {
         Vec3 best = null;
         double bestTop = -Double.MAX_VALUE;
-
         for (RobloxPart part : COLLIDERS) {
             if (!part.canCollide() || part.transparency() >= 1 || !isSlope(part)) continue;
-
             CFrameData cf = CFrameData.of(part);
             Vec3 local = cf.toLocal(center);
-
             double halfX = Math.abs(part.size().x()) * .5;
             double halfY = Math.abs(part.size().y()) * .5;
             double halfZ = Math.abs(part.size().z()) * .5;
             if (halfX < EPS || halfY < EPS || halfZ < EPS) continue;
-
             // Check the player's footprint in the ramp's local X/Z plane.
             double footprintX = hx;
             double footprintZ = hz;
             if (local.x() + footprintX < -halfX || local.x() - footprintX > halfX
                     || local.z() + footprintZ < -halfZ || local.z() - footprintZ > halfZ) continue;
-
             double z0 = Math.max(-halfZ, local.z() - footprintZ);
             double z1 = Math.min(halfZ, local.z() + footprintZ);
-
             double topLocal;
             if ("WedgePart".equalsIgnoreCase(part.className())) {
                 // High edge is +Z after the requested flip.
@@ -345,19 +325,15 @@ final class RobloxPlayerCollision {
                 double topD = Math.min(x0 / halfX, zA / halfZ) * halfY;
                 topLocal = Math.max(Math.max(topA, topB), Math.max(topC, topD));
             }
-
             Vec3 topWorld = cf.toWorld(new Vec3(local.x(), topLocal, local.z()));
             double feet = center.y() - hy;
-
             // Only support from above/near the surface. Do not teleport a player
             // through a ramp from underneath it.
             double verticalGap = topWorld.y() - feet;
             if (verticalGap < -CONTACT_EPS || verticalGap > STEP_HEIGHT_STUDS + CONTACT_EPS) continue;
-
             // Require the player's footprint to actually overlap the ramp's
             // horizontal projection in world space.
             if (!horizontalFootprintOverlapsRamp(center, hx, hz, part)) continue;
-
             double newCenterY = topWorld.y() + hy + EPS;
             if (best == null || newCenterY > bestTop) {
                 bestTop = newCenterY;
@@ -389,19 +365,23 @@ final class RobloxPlayerCollision {
         static CFrameData of(RobloxPart p) {
             return new CFrameData(p.cframe().position(), p.cframe().rotation());
         }
+
         Vec3 toLocal(Vec3 world) {
             Vec3 d = world.sub(position);
             return rotateInverse(d);
         }
+
         Vec3 toWorld(Vec3 local) {
             return position.add(rotate(local));
         }
+
         Vec3 rotate(Vec3 local) {
             return new Vec3(
                     rotation[0][0] * local.x() + rotation[0][1] * local.y() + rotation[0][2] * local.z(),
                     rotation[1][0] * local.x() + rotation[1][1] * local.y() + rotation[1][2] * local.z(),
                     rotation[2][0] * local.x() + rotation[2][1] * local.y() + rotation[2][2] * local.z());
         }
+
         Vec3 rotateInverse(Vec3 world) {
             return new Vec3(
                     rotation[0][0] * world.x() + rotation[1][0] * world.y() + rotation[2][0] * world.z(),
@@ -425,21 +405,17 @@ final class RobloxPlayerCollision {
         Penetration best = null;
         for (RobloxPart part : COLLIDERS) {
             if (!part.canCollide() || part.transparency() >= 1 || isSlope(part)) continue;
-
             CFrameData cf = CFrameData.of(part);
             Vec3 local = cf.toLocal(center);
             Vec3 half = partLocalHalf(part);
             Vec3 ph = playerLocalHalf(cf.rotation(), hx, hy, hz);
-
             double minX = -half.x() - ph.x(), maxX = half.x() + ph.x();
             double minY = -half.y() - ph.y(), maxY = half.y() + ph.y();
             double minZ = -half.z() - ph.z(), maxZ = half.z() + ph.z();
-
             double ox = Math.min(local.x(), maxX) - Math.max(local.x(), minX);
             double oy = Math.min(local.y(), maxY) - Math.max(local.y(), minY);
             double oz = Math.min(local.z(), maxZ) - Math.max(local.z(), minZ);
             if (ox <= EPS || oy <= EPS || oz <= EPS) continue;
-
             double depth = ox;
             Vec3 localNormal = new Vec3(local.x() >= 0.0 ? 1 : -1, 0, 0);
             if (oy < depth) {
@@ -450,7 +426,6 @@ final class RobloxPlayerCollision {
                 depth = oz;
                 localNormal = new Vec3(0, 0, local.z() >= 0.0 ? 1 : -1);
             }
-
             touching.add(part);
             Vec3 worldNormal = cf.rotate(localNormal);
             if (best == null || depth < best.depth) best = new Penetration(part, depth, worldNormal);
@@ -465,39 +440,31 @@ final class RobloxPlayerCollision {
         Vec3 localDelta = cf.rotateInverse(delta);
         Vec3 half = partLocalHalf(part);
         Vec3 ph = playerLocalHalf(cf.rotation(), hx, hy, hz);
-
         double minX = -half.x() - ph.x() - EPS, maxX = half.x() + ph.x() + EPS;
         double minY = -half.y() - ph.y() - EPS, maxY = half.y() + ph.y() + EPS;
         double minZ = -half.z() - ph.z() - EPS, maxZ = half.z() + ph.z() + EPS;
-
         double tEnter = 0.0;
         double tExit = 1.0;
         Vec3 enterNormalLocal = new Vec3(0, 0, 0);
-
         double[] result = slab(localStart.x(), localDelta.x(), minX, maxX, tEnter, tExit);
         if (result == null) return null;
         double oldEnter = tEnter;
         tEnter = result[0]; tExit = result[1];
         if (result[2] != 0 && result[3] >= oldEnter - 1.0e-12) enterNormalLocal = new Vec3(result[2], 0, 0);
-
         result = slab(localStart.y(), localDelta.y(), minY, maxY, tEnter, tExit);
         if (result == null) return null;
         oldEnter = tEnter;
         tEnter = result[0]; tExit = result[1];
         if (result[2] != 0 && result[3] >= oldEnter - 1.0e-12) enterNormalLocal = new Vec3(0, result[2], 0);
-
         result = slab(localStart.z(), localDelta.z(), minZ, maxZ, tEnter, tExit);
         if (result == null) return null;
         oldEnter = tEnter;
         tEnter = result[0]; tExit = result[1];
         if (result[2] != 0 && result[3] >= oldEnter - 1.0e-12) enterNormalLocal = new Vec3(0, 0, result[2]);
-
         if (tEnter > tExit || tExit < 0.0 || tEnter > 1.0) return null;
-
         // If already inside, don't use a zero-length sweep hit.  The
         // penetration pass below gives this case a stable minimal correction.
         if (tEnter <= EPS && pointInsideExpanded(localStart, minX, maxX, minY, maxY, minZ, maxZ)) return null;
-
         return new SweepHit(part, Math.max(0.0, tEnter), cf.rotate(enterNormalLocal));
     }
 
@@ -525,7 +492,6 @@ final class RobloxPlayerCollision {
             if (start < min || start > max) return null;
             return new double[]{enter, exit, 0, Double.NEGATIVE_INFINITY};
         }
-
         // The entry face depends on the direction of travel.  Do not flip
         // the normal after swapping the intersection times: for negative
         // motion the entry face is MAX (normal +1), and for positive motion
@@ -544,7 +510,6 @@ final class RobloxPlayerCollision {
             t2 = (min - start) / delta;
             normal = 1.0;
         }
-
         if (t1 > enter) enter = t1;
         if (t2 < exit) exit = t2;
         if (enter > exit) return null;
@@ -605,7 +570,6 @@ final class RobloxPlayerCollision {
         return new AABB(c.x() - ex, c.y() - ey, c.z() - ez,
                 c.x() + ex, c.y() + ey, c.z() + ez);
     }
-
 
     private static net.minecraft.world.phys.Vec3 projectOutVelocity(net.minecraft.world.phys.Vec3 velocity, Vec3 normal) {
         double vn = velocity.x * normal.x() + velocity.y * normal.y() + velocity.z * normal.z();
