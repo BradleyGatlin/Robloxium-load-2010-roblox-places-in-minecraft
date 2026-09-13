@@ -59,7 +59,7 @@ public final class RobloxPartRenderer {
     private static final String SURFACE_INLET="textures/2010/materials/surface_inlet.png";
     private static final String SURFACE_UNIVERSAL="textures/2010/materials/surface_universal.png";
 
-    private static final double DETAIL_DISTANCE_STUDS=1000.0;
+    private static final double DETAIL_DISTANCE_STUDS=200.0;
 
     private static final SkyEnvironment SKY_ENVIRONMENT=SkyEnvironment.load();
 
@@ -1912,10 +1912,10 @@ public final class RobloxPartRenderer {
         // Project each corner onto the face axes so U and V stay square in studs.
         // V runs along the face's "up" (part +Y on sides), which stops the old
         // downward stretch from using the wrong edge as the vertical tile axis.
-        float ua=surfaceUv(a,a,uDir,true), va=surfaceUv(a,a,vDir,false);
-        float ub=surfaceUv(bb,a,uDir,true), vb=surfaceUv(bb,a,vDir,false);
-        float uc=surfaceUv(c,a,uDir,true), vc=surfaceUv(c,a,vDir,false);
-        float ud=surfaceUv(d,a,uDir,true), vd=surfaceUv(d,a,vDir,false);
+        float ua=surfaceUv(a,a,uDir), va=surfaceUv(a,a,vDir);
+        float ub=surfaceUv(bb,a,uDir), vb=surfaceUv(bb,a,vDir);
+        float uc=surfaceUv(c,a,uDir), vc=surfaceUv(c,a,vDir);
+        float ud=surfaceUv(d,a,uDir), vd=surfaceUv(d,a,vDir);
         // Flip V so texture-space V=0 is the top of the face (Minecraft/GL convention).
         float vMax=Math.max(Math.max(va,vb),Math.max(vc,vd));
         va=vMax-va; vb=vMax-vb; vc=vMax-vc; vd=vMax-vd;
@@ -1933,8 +1933,10 @@ public final class RobloxPartRenderer {
         vertexSurface(pose,b,wd,rd,ud,vd,n,p);
         vertexSurface(pose,b,wa,ra,ua,va,n,p);
     }
-    private static float surfaceUv(Vec3 point,Vec3 origin,Vec3 axis,boolean uAxis){
-        double tile=SURFACE_TILE_STUDS*(uAxis?SURFACE_U_STRETCH:1.0);
+    private static float surfaceUv(Vec3 point,Vec3 origin,Vec3 axis){
+        // 1.5x stretch only along the part's local X axis.
+        boolean alongX=Math.abs(axis.x())>=Math.abs(axis.y())&&Math.abs(axis.x())>=Math.abs(axis.z());
+        double tile=SURFACE_TILE_STUDS*(alongX?SURFACE_U_STRETCH:1.0);
         return (float)(point.sub(origin).dot(axis)/tile);
     }
 
