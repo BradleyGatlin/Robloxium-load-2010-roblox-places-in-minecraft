@@ -98,6 +98,7 @@ public final class RobloxPartRenderer {
         Map.entry("1280","textures/2010/materials/grass.png"),
         Map.entry("1536","textures/2010/materials/ice.png")
     );
+    
     private static final Map<String,Identifier> TEX=new HashMap<>();
     private static final Map<String,OnlineMesh> MESH_CACHE=new ConcurrentHashMap<>();
     private static final Set<String> MESH_PENDING=ConcurrentHashMap.newKeySet();
