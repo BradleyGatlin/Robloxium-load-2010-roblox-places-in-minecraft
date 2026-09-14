@@ -147,43 +147,9 @@ public final class RobloxPartRenderer {
         }
     }
     private static void requireVulkanBackend(){
-
-        if(irisPresent())return;
-        String backend;
-        try{
-            backend=RenderSystem.getDevice().getDeviceInfo().backendName();
-        }catch(Throwable t){
-            throw new IllegalStateException("\n\n"+
-                "============================================================\n"+
-                "                 ROBLOXIUM VULKAN ERROR                 \n"+
-                "============================================================\n"+
-                "Robloxium's 2010 renderer requires Minecraft 26.2's\n"+
-                "VULKAN graphics backend. The GPU device was not ready.\n"+
-                "\n"+
-                "Enable: Video Settings -> Graphics API -> Prefer Vulkan\n"+
-                "then restart Minecraft.\n"+
-                "\n"+
-                "Renderer initialization failed before any Roblox geometry\n"+
-                "was submitted. This is intentional: Robloxium will NOT\n"+
-                "silently run its renderer on OpenGL.\n"+
-                "============================================================\n",t);
-        }
-        if(backend==null || !backend.toLowerCase(Locale.ROOT).contains(VULKAN_BACKEND_NAME)){
-            throw new IllegalStateException("\n\n"+
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
-                "!!                ROBLOXIUM VULKAN ERROR                !!\n"+
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
-                "!! This Robloxium build is VULKAN ONLY.                  !!\n"+
-                "!!                                                        !!\n"+
-                "!! Active Minecraft graphics backend: "+String.valueOf(backend)+"\n"+
-                "!!                                                        !!\n"+
-                "!! OpenGL is deliberately NOT supported by the Roblox    !!\n"+
-                "!! 2010 renderer. No Roblox geometry was rendered.       !!\n"+
-                "!!                                                        !!\n"+
-                "!! Go to Video Settings -> Graphics API -> Prefer Vulkan !!\n"+
-                "!! and restart Minecraft.                                 !!\n"+
-                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
-        }
+        // OpenGL and Vulkan are both accepted. The 2010 renderer submits
+        // through Minecraft 26.2's RenderPipeline API, so a missing Vulkan
+        // device must not crash the client.
     }
     private RobloxPartRenderer(){}
     public static void register(){
