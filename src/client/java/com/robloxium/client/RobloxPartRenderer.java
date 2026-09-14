@@ -307,7 +307,7 @@ public final class RobloxPartRenderer {
     }
     private static void skyFace(PoseStack.Pose pose,VertexConsumer b,int face,double r,net.minecraft.world.phys.Vec3 cam){Vec3 o=new Vec3(cam.x(),cam.y(),cam.z()),a,bb,c,d;switch(face){case 0-> {a=o.add(new Vec3(r,-r,-r));bb=o.add(new Vec3(r,-r,r));c=o.add(new Vec3(r,r,r));d=o.add(new Vec3(r,r,-r));}case 1->{a=o.add(new Vec3(-r,-r,r));bb=o.add(new Vec3(-r,-r,-r));c=o.add(new Vec3(-r,r,-r));d=o.add(new Vec3(-r,r,r));}case 2->{a=o.add(new Vec3(-r,r,r));bb=o.add(new Vec3(r,r,r));c=o.add(new Vec3(r,r,-r));d=o.add(new Vec3(-r,r,-r));}case 3->{a=o.add(new Vec3(-r,-r,-r));bb=o.add(new Vec3(r,-r,-r));c=o.add(new Vec3(r,-r,r));d=o.add(new Vec3(-r,-r,r));}case 4->{a=o.add(new Vec3(-r,-r,r));bb=o.add(new Vec3(r,-r,r));c=o.add(new Vec3(r,r,r));d=o.add(new Vec3(-r,r,r));}default->{a=o.add(new Vec3(r,-r,-r));bb=o.add(new Vec3(-r,-r,-r));c=o.add(new Vec3(-r,r,-r));d=o.add(new Vec3(r,r,-r));}}
         Vec3 normal=switch(face){case 0->new Vec3(-1,0,0);case 1->new Vec3(1,0,0);case 2->new Vec3(0,-1,0);case 3->new Vec3(0,1,0);case 4->new Vec3(0,0,-1);default->new Vec3(0,0,1);};skyVertex(pose,b,d,0,0,normal);skyVertex(pose,b,c,1,0,normal);skyVertex(pose,b,bb,1,1,normal);skyVertex(pose,b,bb,1,1,normal);skyVertex(pose,b,a,0,1,normal);skyVertex(pose,b,d,0,0,normal);}
-    private static void skyVertex(PoseStack.Pose pose,VertexConsumer b,Vec3 v,float u,float vv,Vec3 normal){b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor(255,255,255,255).setUv(u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());}
+    private static void skyVertex(PoseStack.Pose pose,VertexConsumer b,Vec3 v,float u,float vv,Vec3 normal){b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor(255,255,255,255).setUv(1f-u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());}
 
     private static Vec3 sunDirection(RobloxLighting lighting){
 
@@ -1651,7 +1651,7 @@ public final class RobloxPartRenderer {
         RobloxCoordinateSpace.toMinecraft(roblox.x())+SCENE_ORIGIN.x(),
         RobloxCoordinateSpace.toMinecraft(roblox.y())+SCENE_ORIGIN.y(),
         RobloxCoordinateSpace.toMinecraft(roblox.z())+SCENE_ORIGIN.z());}
-    private static void vertexUnlit(PoseStack.Pose pose,VertexConsumer b,Vec3 v,int c,float u,float vv,Vec3 n){Vec3 normal=n.normalized();b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor((c>>16)&255,(c>>8)&255,c&255,(c>>>24)&255).setUv(u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());}
+    private static void vertexUnlit(PoseStack.Pose pose,VertexConsumer b,Vec3 v,int c,float u,float vv,Vec3 n){Vec3 normal=n.normalized();b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor((c>>16)&255,(c>>8)&255,c&255,(c>>>24)&255).setUv(1f-u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());}
     private static void vertex(PoseStack.Pose pose,VertexConsumer b,Vec3 v,int c,float u,float vv,Vec3 n,RobloxPart part){
         vertexWithShadow(pose,b,v,c,u,vv,n,part,Double.NaN);
     }
@@ -1672,7 +1672,7 @@ public final class RobloxPartRenderer {
         }
         int shaded=shadeSpecular(c,diffuse,specular);
         shaded=applyEnvironmentLighting(shaded,part,normal,ndl,v);
-        b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor((shaded>>16)&255,(shaded>>8)&255,shaded&255,(shaded>>>24)&255).setUv(u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());
+        b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor((shaded>>16)&255,(shaded>>8)&255,shaded&255,(shaded>>>24)&255).setUv(1f-u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());
     }
     private static Vec3 minecraftToRoblox(Vec3 mc){
         return new Vec3(
@@ -2016,6 +2016,6 @@ public final class RobloxPartRenderer {
         }
         int shaded=shadeSpecular(c,diffuse,specular);
         shaded=applyEnvironmentLighting(shaded,p,normal,ndl,v);
-        b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor((shaded>>16)&255,(shaded>>8)&255,shaded&255,(shaded>>>24)&255).setUv(u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());
+        b.addVertex(pose,(float)v.x(),(float)v.y(),(float)v.z()).setColor((shaded>>16)&255,(shaded>>8)&255,shaded&255,(shaded>>>24)&255).setUv(1f-u,vv).setOverlay(0).setLight(LIGHT).setNormal((float)normal.x(),(float)normal.y(),(float)normal.z());
     }
 }
