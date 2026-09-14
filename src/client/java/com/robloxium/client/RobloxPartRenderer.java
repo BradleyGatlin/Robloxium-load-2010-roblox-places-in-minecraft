@@ -1,44 +1,64 @@
 package com.robloxium.client;
 
-import com.mojang.blaze3d.PrimitiveTopology;
-import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.VertexConsumer;
-import com.robloxium.math.RobloxCoordinateSpace;
-import com.robloxium.math.CFrame;
-import com.robloxium.math.Vec3;
-import com.robloxium.runtime.*;
-import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
-import net.minecraft.client.renderer.SubmitNodeCollector;
-import net.minecraft.client.renderer.RenderPipelines;
-import net.minecraft.client.renderer.rendertype.RenderSetup;
-import com.mojang.blaze3d.pipeline.RenderPipeline;
-import com.mojang.blaze3d.pipeline.ColorTargetState;
-import com.mojang.blaze3d.pipeline.BlendFunction;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.VertexFormat;
-import com.mojang.blaze3d.platform.CompareOp;
-import com.mojang.blaze3d.pipeline.DepthStencilState;
-import net.minecraft.client.renderer.rendertype.RenderType;
-import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.textures.AddressMode;
-import com.mojang.blaze3d.textures.FilterMode;
-import net.minecraft.resources.Identifier;
-import net.minecraft.client.Minecraft;
+import java.awt.image.BufferedImage;
+import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
-import java.awt.image.BufferedImage;
+
 import javax.imageio.ImageIO;
-import java.util.*;
-import java.util.regex.*;
+
+import com.mojang.blaze3d.PrimitiveTopology;
+import com.mojang.blaze3d.pipeline.ColorTargetState;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.platform.CompareOp;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.AddressMode;
+import com.mojang.blaze3d.textures.FilterMode;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.robloxium.math.CFrame;
+import com.robloxium.math.RobloxCoordinateSpace;
+import com.robloxium.math.Vec3;
+import com.robloxium.runtime.RobloxCharacter;
+import com.robloxium.runtime.RobloxDecal;
+import com.robloxium.runtime.RobloxGame;
+import com.robloxium.runtime.RobloxInstance;
+import com.robloxium.runtime.RobloxLighting;
+import com.robloxium.runtime.RobloxPart;
+
+import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.RenderPipelines;
+import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.client.renderer.rendertype.RenderSetup;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.resources.Identifier;
 
 public final class RobloxPartRenderer {
     private static final int LIGHT=0x00F000F0;
@@ -51,16 +71,13 @@ public final class RobloxPartRenderer {
         };
     }
 
-    // Classic 2010 surface maps are 64x64 and tile every 2 studs (2x2 features in the PNG).
-    private static final double SURFACE_TILE_STUDS=2.0;
+    private static final double SURFACE_TILE_STUDS=3.0;
     private static final Map<Identifier,RenderType> REPEAT_TEXTURE_TYPES=new HashMap<>();
-    private static final String SURFACE_GLUE="textures/2010/materials/surface_glue.png";
-    private static final String SURFACE_WELD="textures/2010/materials/surface_weld.png";
     private static final String SURFACE_STUDS="textures/2010/materials/surface_studs.png";
     private static final String SURFACE_INLET="textures/2010/materials/surface_inlet.png";
     private static final String SURFACE_UNIVERSAL="textures/2010/materials/surface_universal.png";
 
-    private static final double DETAIL_DISTANCE_STUDS=200.0;
+    private static final double DETAIL_DISTANCE_STUDS=1000.0;
 
     private static final SkyEnvironment SKY_ENVIRONMENT=SkyEnvironment.load();
 
@@ -107,87 +124,66 @@ public final class RobloxPartRenderer {
     private static boolean registered;
 
     private static final String VULKAN_BACKEND_NAME="vulkan";
-    private static final String OPENGL_BACKEND_NAME="opengl";
-
-    private enum GraphicsBackend { VULKAN, OPENGL, UNKNOWN }
-
-    private static volatile GraphicsBackend CACHED_BACKEND=GraphicsBackend.UNKNOWN;
-
-    private static GraphicsBackend detectBackend(){
-        if(CACHED_BACKEND!=GraphicsBackend.UNKNOWN)return CACHED_BACKEND;
-        String backend=currentBackendName();
-        if(backend==null)return GraphicsBackend.UNKNOWN;
-        String lower=backend.toLowerCase(Locale.ROOT);
-        if(lower.contains(VULKAN_BACKEND_NAME)){
-            CACHED_BACKEND=GraphicsBackend.VULKAN;
-        }else if(lower.contains(OPENGL_BACKEND_NAME) || lower.contains("gl")){
-            CACHED_BACKEND=GraphicsBackend.OPENGL;
-        }else{
-            CACHED_BACKEND=GraphicsBackend.UNKNOWN;
-        }
-        return CACHED_BACKEND;
-    }
-
-    private static String currentBackendName(){
+    private static Boolean IRIS_PRESENT;
+    private static boolean irisPresent(){
+        if(IRIS_PRESENT!=null)return IRIS_PRESENT;
+        boolean present=false;
         try{
-            return RenderSystem.getDevice().getDeviceInfo().backendName();
-        }catch(Throwable t){
-            return null;
+            Class<?> loader=Class.forName("net.fabricmc.loader.api.FabricLoader");
+            Object inst=loader.getMethod("getInstance").invoke(null);
+            present=(Boolean)loader.getMethod("isModLoaded",String.class).invoke(inst,"iris");
+        }catch(Throwable ignored){}
+        IRIS_PRESENT=present;
+        return present;
+    }
+    private static boolean irisShadersActive(){
+        if(!irisPresent())return false;
+        try{
+            Class<?> api=Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+            Object inst=api.getMethod("getInstance").invoke(null);
+            return Boolean.TRUE.equals(api.getMethod("isShaderPackInUse").invoke(inst));
+        }catch(Throwable ignored){
+            return true;
         }
     }
+    private static void requireVulkanBackend(){
 
-    static boolean usingOpenGL(){
-        return detectBackend()==GraphicsBackend.OPENGL;
-    }
-
-    static boolean usingVulkan(){
-        return detectBackend()==GraphicsBackend.VULKAN;
-    }
-
-    /** Accepts both Minecraft 26.2 backends. Geometry goes through Blaze3D, not raw GL/Vulkan. */
-    private static void requireSupportedBackend(){
+        if(irisPresent())return;
         String backend;
         try{
             backend=RenderSystem.getDevice().getDeviceInfo().backendName();
         }catch(Throwable t){
             throw new IllegalStateException("\n\n"+
                 "============================================================\n"+
-                "                ROBLOXIUM RENDERER ERROR                \n"+
+                "                 ROBLOXIUM VULKAN ERROR                 \n"+
                 "============================================================\n"+
-                "Robloxium's 2010 renderer could not read the active\n"+
-                "Minecraft graphics backend. The GPU device was not ready.\n"+
+                "Robloxium's 2010 renderer requires Minecraft 26.2's\n"+
+                "VULKAN graphics backend. The GPU device was not ready.\n"+
                 "\n"+
-                "Try Video Settings -> Graphics API -> Prefer OpenGL\n"+
-                "or Prefer Vulkan, then restart Minecraft.\n"+
+                "Enable: Video Settings -> Graphics API -> Prefer Vulkan\n"+
+                "then restart Minecraft.\n"+
+                "\n"+
+                "Renderer initialization failed before any Roblox geometry\n"+
+                "was submitted. This is intentional: Robloxium will NOT\n"+
+                "silently run its renderer on OpenGL.\n"+
                 "============================================================\n",t);
         }
-        if(backend==null){
+        if(backend==null || !backend.toLowerCase(Locale.ROOT).contains(VULKAN_BACKEND_NAME)){
             throw new IllegalStateException("\n\n"+
-                "Robloxium could not determine the graphics backend.\n"+
-                "Set Video Settings -> Graphics API to Prefer OpenGL or Prefer Vulkan.\n");
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
+                "!!                ROBLOXIUM VULKAN ERROR                !!\n"+
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
+                "!! This Robloxium build is VULKAN ONLY.                  !!\n"+
+                "!!                                                        !!\n"+
+                "!! Active Minecraft graphics backend: "+String.valueOf(backend)+"\n"+
+                "!!                                                        !!\n"+
+                "!! OpenGL is deliberately NOT supported by the Roblox    !!\n"+
+                "!! 2010 renderer. No Roblox geometry was rendered.       !!\n"+
+                "!!                                                        !!\n"+
+                "!! Go to Video Settings -> Graphics API -> Prefer Vulkan !!\n"+
+                "!! and restart Minecraft.                                 !!\n"+
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
         }
-        String lower=backend.toLowerCase(Locale.ROOT);
-        boolean vulkan=lower.contains(VULKAN_BACKEND_NAME);
-        boolean opengl=lower.contains(OPENGL_BACKEND_NAME) || lower.contains("gl");
-        if(!vulkan && !opengl){
-            throw new IllegalStateException("\n\n"+
-                "============================================================\n"+
-                "                ROBLOXIUM RENDERER ERROR                \n"+
-                "============================================================\n"+
-                "Unsupported Minecraft graphics backend: "+backend+"\n"+
-                "\n"+
-                "Robloxium supports OpenGL and Vulkan through Blaze3D.\n"+
-                "Set Video Settings -> Graphics API to Prefer OpenGL\n"+
-                "or Prefer Vulkan, then restart Minecraft.\n"+
-                "============================================================\n");
-        }
-        detectBackend();
-    }
-
-    /** @deprecated Use {@link #requireSupportedBackend()}. Kept so older call sites compile. */
-    @Deprecated
-    private static void requireVulkanBackend(){
-        requireSupportedBackend();
     }
     private RobloxPartRenderer(){}
     public static void register(){
@@ -197,7 +193,7 @@ public final class RobloxPartRenderer {
         LevelRenderEvents.COLLECT_SUBMITS.register(ctx->{
             RobloxGame g=RobloxiumClient.HOST.game();
             if(!g.running())return;
-            requireSupportedBackend();
+            requireVulkanBackend();
             CURRENT_LIGHTING=g.lighting();
             CURRENT_SUN=sunDirection(CURRENT_LIGHTING);
             CURRENT_CAMERA=ctx.levelState().cameraRenderState.pos;
@@ -363,9 +359,6 @@ public final class RobloxPartRenderer {
         }
 
         drawDecals(c,ps,parts,cam);
-        // SurfaceType: Smooth=0 Glue=1 Weld=2 Studs=3 Inlet=4 Universal=5
-        submitSurfaceType(c,ps,parts,1,SURFACE_GLUE);
-        submitSurfaceType(c,ps,parts,2,SURFACE_WELD);
         submitSurfaceType(c,ps,parts,3,SURFACE_STUDS);
         submitSurfaceType(c,ps,parts,4,SURFACE_INLET);
         submitSurfaceType(c,ps,parts,5,SURFACE_UNIVERSAL);
@@ -1315,10 +1308,10 @@ public final class RobloxPartRenderer {
             drawSphere(pose,b,p,col);
             return;
         }
-        double headScale = 1.1;
-        double sx = 0.5 * headScale * (p.size().x() * p.meshScale().x())/ Math.max(HEAD_MESH.half.x() * 2.0, 1e-9);
-        double sy = headScale * (p.size().y() * p.meshScale().y())/ Math.max(HEAD_MESH.half.y() * 2.0, 1e-9);
-        double sz = headScale * (p.size().z() * p.meshScale().z())/ Math.max(HEAD_MESH.half.z() * 2.0, 1e-9);
+        double headScale=1;
+        double sx=headScale*(p.size().x()*p.meshScale().x())/Math.max(HEAD_MESH.half.x()*2.0,1e-9);
+        double sy=headScale*(p.size().y()*p.meshScale().y())/Math.max(HEAD_MESH.half.y()*2.0,1e-9);
+        double sz=headScale*(p.size().z()*p.meshScale().z())/Math.max(HEAD_MESH.half.z()*2.0,1e-9);
         Vec3 off=p.meshOffset();
         for(int i=0;i<HEAD_MESH.positions.length;i+=3){
             Vec3 a=HEAD_MESH.positions[i], bb=HEAD_MESH.positions[i+1], c=HEAD_MESH.positions[i+2];
@@ -1868,77 +1861,36 @@ public final class RobloxPartRenderer {
     }
     private static void drawSurfaceType(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,int type){
         int c=0xFFFFFFFF;
-        // Match the drawn brick, including SpecialMesh/FileMesh scale.
-        Vec3 size=p.size(),mesh=p.meshScale();
-        double hx=Math.abs(size.x()*mesh.x())*.5;
-        double hy=Math.abs(size.y()*mesh.y())*.5;
-        double hz=Math.abs(size.z()*mesh.z())*.5;
-        // Roblox NormalId: Right=+X, Top=+Y, Back=+Z, Left=-X, Bottom=-Y, Front=-Z.
-        // Previous front/back mapping was swapped, so side overlays never landed on the
-        // face the place file actually marked.
-        if(p.topSurface()==type)
-            surfaceQuad(pose,b,p,
-                new Vec3(-hx,hy,-hz),new Vec3(hx,hy,-hz),new Vec3(hx,hy,hz),new Vec3(-hx,hy,hz),
-                new Vec3(0,1,0),new Vec3(1,0,0),new Vec3(0,0,1),c);
-        if(p.bottomSurface()==type)
-            surfaceQuad(pose,b,p,
-                new Vec3(-hx,-hy,hz),new Vec3(hx,-hy,hz),new Vec3(hx,-hy,-hz),new Vec3(-hx,-hy,-hz),
-                new Vec3(0,-1,0),new Vec3(1,0,0),new Vec3(0,0,-1),c);
-        if(p.frontSurface()==type)
-            surfaceQuad(pose,b,p,
-                new Vec3(hx,-hy,-hz),new Vec3(-hx,-hy,-hz),new Vec3(-hx,hy,-hz),new Vec3(hx,hy,-hz),
-                new Vec3(0,0,-1),new Vec3(-1,0,0),new Vec3(0,1,0),c);
-        if(p.backSurface()==type)
-            surfaceQuad(pose,b,p,
-                new Vec3(-hx,-hy,hz),new Vec3(hx,-hy,hz),new Vec3(hx,hy,hz),new Vec3(-hx,hy,hz),
-                new Vec3(0,0,1),new Vec3(1,0,0),new Vec3(0,1,0),c);
-        if(p.leftSurface()==type)
-            surfaceQuad(pose,b,p,
-                new Vec3(-hx,-hy,-hz),new Vec3(-hx,-hy,hz),new Vec3(-hx,hy,hz),new Vec3(-hx,hy,-hz),
-                new Vec3(-1,0,0),new Vec3(0,0,1),new Vec3(0,1,0),c);
-        if(p.rightSurface()==type)
-            surfaceQuad(pose,b,p,
-                new Vec3(hx,-hy,hz),new Vec3(hx,-hy,-hz),new Vec3(hx,hy,-hz),new Vec3(hx,hy,hz),
-                new Vec3(1,0,0),new Vec3(0,0,-1),new Vec3(0,1,0),c);
+        double hx=p.size().x()/2,hy=p.size().y()/2,hz=p.size().z()/2;
+        if(p.topSurface()==type)surfaceQuad(pose,b,p,new Vec3(-hx,hy,hz),new Vec3(hx,hy,hz),new Vec3(hx,hy,-hz),new Vec3(-hx,hy,-hz),0,1,0,c);
+        if(p.bottomSurface()==type)surfaceQuad(pose,b,p,new Vec3(-hx,-hy,-hz),new Vec3(hx,-hy,-hz),new Vec3(hx,-hy,hz),new Vec3(-hx,-hy,hz),0,-1,0,c);
+        if(p.frontSurface()==type)surfaceQuad(pose,b,p,new Vec3(-hx,-hy,hz),new Vec3(hx,-hy,hz),new Vec3(hx,hy,hz),new Vec3(-hx,hy,hz),0,0,1,c);
+        if(p.backSurface()==type)surfaceQuad(pose,b,p,new Vec3(hx,-hy,-hz),new Vec3(-hx,-hy,-hz),new Vec3(-hx,hy,-hz),new Vec3(hx,hy,-hz),0,0,-1,c);
+        if(p.leftSurface()==type)surfaceQuad(pose,b,p,new Vec3(-hx,-hy,-hz),new Vec3(-hx,-hy,hz),new Vec3(-hx,hy,hz),new Vec3(-hx,hy,-hz),-1,0,0,c);
+        if(p.rightSurface()==type)surfaceQuad(pose,b,p,new Vec3(hx,-hy,hz),new Vec3(hx,-hy,-hz),new Vec3(hx,hy,-hz),new Vec3(hx,hy,hz),1,0,0,c);
     }
-    private static void surfaceQuad(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,
-                                    Vec3 a,Vec3 bb,Vec3 c,Vec3 d,
-                                    Vec3 localNormal,Vec3 localU,Vec3 localV,int color){
-        Vec3 expected=localNormal.normalized();
-        Vec3 uDir=localU.normalized();
-        Vec3 vDir=localV.normalized();
-        // Keep winding consistent with the requested face normal without swapping U/V.
-        Vec3 geometric=bb.sub(a).cross(d.sub(a));
-        if(geometric.dot(expected)<0){
-            Vec3 swap=bb;bb=d;d=swap;
-        }
-        Vec3 n=worldNormal(p,expected);
-        // Project each corner onto the face axes so U and V stay square in studs.
-        // V runs along the face's "up" (part +Y on sides), which stops the old
-        // downward stretch from using the wrong edge as the vertical tile axis.
-        float ua=surfaceUv(a,a,uDir), va=surfaceUv(a,a,vDir);
-        float ub=surfaceUv(bb,a,uDir), vb=surfaceUv(bb,a,vDir);
-        float uc=surfaceUv(c,a,uDir), vc=surfaceUv(c,a,vDir);
-        float ud=surfaceUv(d,a,uDir), vd=surfaceUv(d,a,vDir);
-        // Flip V so texture-space V=0 is the top of the face (Minecraft/GL convention).
-        float vMax=Math.max(Math.max(va,vb),Math.max(vc,vd));
-        va=vMax-va; vb=vMax-vb; vc=vMax-vc; vd=vMax-vd;
+    private static void surfaceQuad(PoseStack.Pose pose,VertexConsumer b,RobloxPart p,Vec3 a,Vec3 bb,Vec3 c,Vec3 d,float nx,float ny,float nz,int color){
+        Vec3 expected=new Vec3(nx,ny,nz).normalized();
+        Vec3 geometric=bb.sub(a).cross(c.sub(a)).normalized();
+        if(geometric.dot(expected)<0){Vec3 swap=bb;bb=d;d=swap;}
+        double[][]r=p.cframe().rotation();
+        Vec3 n=new Vec3(r[0][0]*nx+r[0][1]*ny+r[0][2]*nz,r[1][0]*nx+r[1][1]*ny+r[1][2]*nz,r[2][0]*nx+r[2][1]*ny+r[2][2]*nz);
+        Vec3 edgeU=bb.sub(a),edgeV=d.sub(a);
+        float uTex=(float)(edgeU.length()/SURFACE_TILE_STUDS);
+        float vTex=(float)(edgeV.length()/SURFACE_TILE_STUDS);
+        Vec3 wn=n.normalized();
 
-        final double SURFACE_OFFSET_STUDS=0.02;
+        final double SURFACE_OFFSET_STUDS=0.05;
         Vec3 offset=expected.mul(SURFACE_OFFSET_STUDS);
         Vec3 wa=world(p,a.add(offset)), wb=world(p,bb.add(offset)),
              wc=world(p,c.add(offset)), wd=world(p,d.add(offset));
-        int ra=reflect(color,p.reflectance(),wa,n), rb=reflect(color,p.reflectance(),wb,n),
-            rc=reflect(color,p.reflectance(),wc,n), rd=reflect(color,p.reflectance(),wd,n);
-        vertexSurface(pose,b,wa,ra,ua,va,n,p);
-        vertexSurface(pose,b,wb,rb,ub,vb,n,p);
-        vertexSurface(pose,b,wc,rc,uc,vc,n,p);
-        vertexSurface(pose,b,wc,rc,uc,vc,n,p);
-        vertexSurface(pose,b,wd,rd,ud,vd,n,p);
-        vertexSurface(pose,b,wa,ra,ua,va,n,p);
-    }
-    private static float surfaceUv(Vec3 point,Vec3 origin,Vec3 axis){
-        return (float)(point.sub(origin).dot(axis)/SURFACE_TILE_STUDS);
+        int ra=reflect(color,p.reflectance(),wa,wn), rb=reflect(color,p.reflectance(),wb,wn), rc=reflect(color,p.reflectance(),wc,wn), rd=reflect(color,p.reflectance(),wd,wn);
+        vertexSurface(pose,b,wa,ra,0,vTex,n,p);
+        vertexSurface(pose,b,wb,rb,uTex,vTex,n,p);
+        vertexSurface(pose,b,wc,rc,uTex,0,n,p);
+        vertexSurface(pose,b,wc,rc,uTex,0,n,p);
+        vertexSurface(pose,b,wd,rd,0,0,n,p);
+        vertexSurface(pose,b,wa,ra,0,vTex,n,p);
     }
 
     private static final class SkyEnvironment {
@@ -1998,64 +1950,22 @@ public final class RobloxPartRenderer {
             .withCull(false);
     }
 
-    private static RenderPipeline registerPipeline(RenderPipeline pipeline){
-        try{
-            return RenderPipelines.register(pipeline);
-        }catch(Throwable ignored){
-            // Already registered, or this snapshot exposes pipelines without a public register.
-            return pipeline;
-        }
-    }
+    private static final RenderPipeline ROBLOX_OPAQUE_PIPELINE = robloxPipeline("pipeline/roblox_2010_opaque")
+        .withColorTargetState(ColorTargetState.DEFAULT)
+        .withDepthStencilState(DepthStencilState.DEFAULT)
+        .build();
 
-    private static DepthStencilState surfaceDepthState(){
-        try{
-            // Polygon offset so studs/inlets sit on the part face on both GL and Vulkan.
-            return new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, true, -1f, -10f);
-        }catch(Throwable ignored){
-            return DepthStencilState.DEFAULT;
-        }
-    }
+    private static final RenderPipeline ROBLOX_TRANSLUCENT_PIPELINE = robloxPipeline("pipeline/roblox_2010_translucent")
+        .withDepthStencilState(DepthStencilState.DEFAULT)
+        .build();
 
-    private static DepthStencilState skyDepthState(){
-        try{
-            return new DepthStencilState(CompareOp.LESS_THAN_OR_EQUAL, false, 0f, 0f);
-        }catch(Throwable ignored){
-            return DepthStencilState.DEFAULT;
-        }
-    }
+    private static final RenderPipeline ROBLOX_SURFACE_PIPELINE = robloxPipeline("pipeline/roblox_2010_surface")
+        .withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, true, -1f, -10f))
+        .build();
 
-    private static RenderPipeline.Builder withTranslucentBlend(RenderPipeline.Builder builder){
-        try{
-            return builder.withColorTargetState(new ColorTargetState(BlendFunction.TRANSLUCENT));
-        }catch(Throwable ignored){
-            return builder;
-        }
-    }
-
-    // CPU-lit POSITION_TEX_COLOR pipelines. Same Blaze3D objects run on OpenGL and Vulkan.
-    private static final RenderPipeline ROBLOX_OPAQUE_PIPELINE = registerPipeline(
-        robloxPipeline("pipeline/roblox_2010_opaque")
-            .withColorTargetState(ColorTargetState.DEFAULT)
-            .withDepthStencilState(DepthStencilState.DEFAULT)
-            .build());
-
-    private static final RenderPipeline ROBLOX_TRANSLUCENT_PIPELINE = registerPipeline(
-        withTranslucentBlend(robloxPipeline("pipeline/roblox_2010_translucent")
-            .withColorTargetState(ColorTargetState.DEFAULT)
-            .withDepthStencilState(DepthStencilState.DEFAULT))
-            .build());
-
-    private static final RenderPipeline ROBLOX_SURFACE_PIPELINE = registerPipeline(
-        withTranslucentBlend(robloxPipeline("pipeline/roblox_2010_surface")
-            .withColorTargetState(ColorTargetState.DEFAULT)
-            .withDepthStencilState(surfaceDepthState()))
-            .build());
-
-    private static final RenderPipeline ROBLOX_SKY_PIPELINE = registerPipeline(
-        robloxPipeline("pipeline/roblox_2010_sky")
-            .withColorTargetState(ColorTargetState.DEFAULT)
-            .withDepthStencilState(skyDepthState())
-            .build());
+    private static final RenderPipeline ROBLOX_SKY_PIPELINE = robloxPipeline("pipeline/roblox_2010_sky")
+        .withDepthStencilState(new DepthStencilState(CompareOp.LESS_THAN_OR_EQUAL, false, 0f, 0f))
+        .build();
 
     private static final Map<Identifier,RenderType> OPAQUE_TEXTURE_TYPES=new HashMap<>();
     private static final Map<Identifier,RenderType> TRANSLUCENT_TEXTURE_TYPES=new HashMap<>();
@@ -2065,7 +1975,7 @@ public final class RobloxPartRenderer {
     private enum PipelineKind { OPAQUE, TRANSLUCENT, SURFACE, SKY }
 
     private static RenderType textureType(Identifier texture,PipelineKind kind){
-        requireSupportedBackend();
+        requireVulkanBackend();
         Map<Identifier,RenderType> cache=switch(kind){
             case OPAQUE -> OPAQUE_TEXTURE_TYPES;
             case TRANSLUCENT -> TRANSLUCENT_TEXTURE_TYPES;
