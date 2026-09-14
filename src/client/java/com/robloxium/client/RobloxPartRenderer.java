@@ -51,10 +51,11 @@ public final class RobloxPartRenderer {
         };
     }
 
-    // Classic 2010 stud/inlet/universal maps tile every 2 studs (2x2 in the PNG).
+    // Classic 2010 surface maps are 64x64 and tile every 2 studs (2x2 features in the PNG).
     private static final double SURFACE_TILE_STUDS=2.0;
-    private static final double SURFACE_U_STRETCH=1.5;
     private static final Map<Identifier,RenderType> REPEAT_TEXTURE_TYPES=new HashMap<>();
+    private static final String SURFACE_GLUE="textures/2010/materials/surface_glue.png";
+    private static final String SURFACE_WELD="textures/2010/materials/surface_weld.png";
     private static final String SURFACE_STUDS="textures/2010/materials/surface_studs.png";
     private static final String SURFACE_INLET="textures/2010/materials/surface_inlet.png";
     private static final String SURFACE_UNIVERSAL="textures/2010/materials/surface_universal.png";
@@ -362,6 +363,9 @@ public final class RobloxPartRenderer {
         }
 
         drawDecals(c,ps,parts,cam);
+        // SurfaceType: Smooth=0 Glue=1 Weld=2 Studs=3 Inlet=4 Universal=5
+        submitSurfaceType(c,ps,parts,1,SURFACE_GLUE);
+        submitSurfaceType(c,ps,parts,2,SURFACE_WELD);
         submitSurfaceType(c,ps,parts,3,SURFACE_STUDS);
         submitSurfaceType(c,ps,parts,4,SURFACE_INLET);
         submitSurfaceType(c,ps,parts,5,SURFACE_UNIVERSAL);
@@ -1934,10 +1938,7 @@ public final class RobloxPartRenderer {
         vertexSurface(pose,b,wa,ra,ua,va,n,p);
     }
     private static float surfaceUv(Vec3 point,Vec3 origin,Vec3 axis){
-        // 1.5x stretch only along the part's local X axis.
-        boolean alongX=Math.abs(axis.x())>=Math.abs(axis.y())&&Math.abs(axis.x())>=Math.abs(axis.z());
-        double tile=SURFACE_TILE_STUDS*(alongX?SURFACE_U_STRETCH:1.0);
-        return (float)(point.sub(origin).dot(axis)/tile);
+        return (float)(point.sub(origin).dot(axis)/SURFACE_TILE_STUDS);
     }
 
     private static final class SkyEnvironment {
