@@ -31,6 +31,14 @@ import java.util.zip.GZIPInputStream;
 
 import javax.imageio.ImageIO;
 
+import com.mojang.blaze3d.PrimitiveTopology;
+import com.mojang.blaze3d.pipeline.ColorTargetState;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.platform.CompareOp;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.textures.AddressMode;
+import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
@@ -90,7 +98,6 @@ public final class RobloxPartRenderer {
         Map.entry("1280","textures/2010/materials/grass.png"),
         Map.entry("1536","textures/2010/materials/ice.png")
     );
-    
     private static final Map<String,Identifier> TEX=new HashMap<>();
     private static final Map<String,OnlineMesh> MESH_CACHE=new ConcurrentHashMap<>();
     private static final Set<String> MESH_PENDING=ConcurrentHashMap.newKeySet();
@@ -140,9 +147,43 @@ public final class RobloxPartRenderer {
         }
     }
     private static void requireVulkanBackend(){
-        // OpenGL and Vulkan are both accepted. The 2010 renderer submits
-        // through Minecraft 26.2's RenderPipeline API, so a missing Vulkan
-        // device must not crash the client.
+
+        if(irisPresent())return;
+        String backend;
+        try{
+            backend=RenderSystem.getDevice().getDeviceInfo().backendName();
+        }catch(Throwable t){
+            throw new IllegalStateException("\n\n"+
+                "============================================================\n"+
+                "                 ROBLOXIUM VULKAN ERROR                 \n"+
+                "============================================================\n"+
+                "Robloxium's 2010 renderer requires Minecraft 26.2's\n"+
+                "graphics backend. The GPU device was not ready.\n"+
+                "\n"+
+                "Enable: Video Settings -> Graphics API -> Prefer Vulkan\n"+
+                "then restart Minecraft.\n"+
+                "\n"+
+                "Renderer initialization failed before any Roblox geometry\n"+
+                "was submitted. This is intentional: Robloxium will NOT\n"+
+                "silently run its renderer on OpenGL.\n"+
+                "============================================================\n",t);
+        }
+        if(backend==null || !backend.toLowerCase(Locale.ROOT).contains(VULKAN_BACKEND_NAME)){
+            throw new IllegalStateException("\n\n"+
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
+                "!!                ROBLOXIUM VULKAN ERROR                !!\n"+
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"+
+                "!! This Robloxium build is VULKAN ONLY.                  !!\n"+
+                "!!                                                        !!\n"+
+                "!! Active Minecraft graphics backend: "+String.valueOf(backend)+"\n"+
+                "!!                                                        !!\n"+
+                "!! OpenGL is deliberately NOT supported by the Roblox    !!\n"+
+                "!! 2010 renderer. No Roblox geometry was rendered.       !!\n"+
+                "!!                                                        !!\n"+
+                "!! Go to Video Settings -> Graphics API -> Prefer Vulkan !!\n"+
+                "!! and restart Minecraft.                                 !!\n"+
+                "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+        }
     }
     private RobloxPartRenderer(){}
     public static void register(){
@@ -152,7 +193,6 @@ public final class RobloxPartRenderer {
         LevelRenderEvents.COLLECT_SUBMITS.register(ctx->{
             RobloxGame g=RobloxiumClient.HOST.game();
             if(!g.running())return;
-            requireVulkanBackend();
             CURRENT_LIGHTING=g.lighting();
             CURRENT_SUN=sunDirection(CURRENT_LIGHTING);
             CURRENT_CAMERA=ctx.levelState().cameraRenderState.pos;
@@ -1901,6 +1941,31 @@ public final class RobloxPartRenderer {
         private static int lerp(int a,int b,double t){return (int)Math.round(a+(b-a)*t);}
     }
 
+    private static RenderPipeline.Builder robloxPipeline(String path){
+        return RenderPipeline.builder(RenderPipelines.GUI_TEXTURED_SNIPPET)
+            .withLocation(Identifier.fromNamespaceAndPath("robloxium", path))
+            .withVertexBinding(0, DefaultVertexFormat.POSITION_TEX_COLOR)
+            .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+            .withCull(false);
+    }
+
+    private static final RenderPipeline ROBLOX_OPAQUE_PIPELINE = robloxPipeline("pipeline/roblox_2010_opaque")
+        .withColorTargetState(ColorTargetState.DEFAULT)
+        .withDepthStencilState(DepthStencilState.DEFAULT)
+        .build();
+
+    private static final RenderPipeline ROBLOX_TRANSLUCENT_PIPELINE = robloxPipeline("pipeline/roblox_2010_translucent")
+        .withDepthStencilState(DepthStencilState.DEFAULT)
+        .build();
+
+    private static final RenderPipeline ROBLOX_SURFACE_PIPELINE = robloxPipeline("pipeline/roblox_2010_surface")
+        .withDepthStencilState(new DepthStencilState(CompareOp.GREATER_THAN_OR_EQUAL, true, -1f, -10f))
+        .build();
+
+    private static final RenderPipeline ROBLOX_SKY_PIPELINE = robloxPipeline("pipeline/roblox_2010_sky")
+        .withDepthStencilState(new DepthStencilState(CompareOp.LESS_THAN_OR_EQUAL, false, 0f, 0f))
+        .build();
+
     private static final Map<Identifier,RenderType> OPAQUE_TEXTURE_TYPES=new HashMap<>();
     private static final Map<Identifier,RenderType> TRANSLUCENT_TEXTURE_TYPES=new HashMap<>();
     private static final Map<Identifier,RenderType> SURFACE_TEXTURE_TYPES=new HashMap<>();
@@ -1909,17 +1974,24 @@ public final class RobloxPartRenderer {
     private enum PipelineKind { OPAQUE, TRANSLUCENT, SURFACE, SKY }
 
     private static RenderType textureType(Identifier texture,PipelineKind kind){
-        requireVulkanBackend();
         Map<Identifier,RenderType> cache=switch(kind){
             case OPAQUE -> OPAQUE_TEXTURE_TYPES;
             case TRANSLUCENT -> TRANSLUCENT_TEXTURE_TYPES;
             case SURFACE -> SURFACE_TEXTURE_TYPES;
             case SKY -> SKY_TEXTURE_TYPES;
         };
+        RenderPipeline pipeline=switch(kind){
+            case OPAQUE -> ROBLOX_OPAQUE_PIPELINE;
+            case TRANSLUCENT -> ROBLOX_TRANSLUCENT_PIPELINE;
+            case SURFACE -> ROBLOX_SURFACE_PIPELINE;
+            case SKY -> ROBLOX_SKY_PIPELINE;
+        };
+        String suffix=kind.name().toLowerCase(Locale.ROOT);
         return cache.computeIfAbsent(texture,id->RenderType.create(
-            "robloxium:vulkan_2010_"+kind.name().toLowerCase(Locale.ROOT)+"_"+id.getPath().replace('/','_'),
-            RenderSetup.builder(RenderPipelines.GUI_TEXTURED)
-                .withTexture("Sampler0",id)
+            "robloxium:vulkan_2010_"+suffix+"_"+id.getPath().replace('/','_'),
+            RenderSetup.builder(pipeline)
+                .withTexture("Sampler0",id,()->RenderSystem.getSamplerCache().getSampler(
+                    AddressMode.REPEAT,AddressMode.REPEAT,FilterMode.NEAREST,FilterMode.NEAREST,true))
                 .createRenderSetup()));
     }
 
