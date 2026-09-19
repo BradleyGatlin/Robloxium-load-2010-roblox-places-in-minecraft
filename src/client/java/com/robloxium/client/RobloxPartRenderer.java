@@ -158,7 +158,7 @@ public final class RobloxPartRenderer {
                 "                 ROBLOXIUM VULKAN ERROR                 \n"+
                 "============================================================\n"+
                 "Robloxium's 2010 renderer requires Minecraft 26.2's\n"+
-                "graphics backend. The GPU device was not ready.\n"+
+                "VULKAN graphics backend. The GPU device was not ready.\n"+
                 "\n"+
                 "Enable: Video Settings -> Graphics API -> Prefer Vulkan\n"+
                 "then restart Minecraft.\n"+
@@ -193,6 +193,7 @@ public final class RobloxPartRenderer {
         LevelRenderEvents.COLLECT_SUBMITS.register(ctx->{
             RobloxGame g=RobloxiumClient.HOST.game();
             if(!g.running())return;
+            requireVulkanBackend();
             CURRENT_LIGHTING=g.lighting();
             CURRENT_SUN=sunDirection(CURRENT_LIGHTING);
             CURRENT_CAMERA=ctx.levelState().cameraRenderState.pos;
@@ -1974,6 +1975,7 @@ public final class RobloxPartRenderer {
     private enum PipelineKind { OPAQUE, TRANSLUCENT, SURFACE, SKY }
 
     private static RenderType textureType(Identifier texture,PipelineKind kind){
+        requireVulkanBackend();
         Map<Identifier,RenderType> cache=switch(kind){
             case OPAQUE -> OPAQUE_TEXTURE_TYPES;
             case TRANSLUCENT -> TRANSLUCENT_TEXTURE_TYPES;
