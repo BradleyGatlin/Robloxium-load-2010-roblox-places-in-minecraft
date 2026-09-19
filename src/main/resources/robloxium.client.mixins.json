@@ -5,6 +5,7 @@
   "client": [
     "RobloxFogRendererMixin",
     "RobloxSkyRendererMixin",
-    "RobloxMinecraftPlayerMixin"
+    "RobloxMinecraftPlayerMixin",
+    "RobloxGameRendererMixin"
   ]
 }

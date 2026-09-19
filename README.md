@@ -30,7 +30,7 @@ real quickly so people dont complain
 
 fabric
 
-26.2
+26.3
 
 go to config
 robloxium
@@ -50,7 +50,7 @@ R6 Character + Humanoid + Motor6D — infrastructure exists; currently intended 
 RBXLX/XML typed property loader — implemented
 Minecraft collision bridge — implemented
 2010 R6 animation — not yet implemented; NPCs are not currently part of the runtime
-Blaze3D/Fabric 26.2 world rendering — VULKAN REQUIRED. This build will not run its Roblox world renderer on OpenGL.
+Blaze3D/Fabric 26.3 world rendering — VULKAN REQUIRED. This build will not run its Roblox world renderer on OpenGL.
 
 Important: Robloxium's world renderer is explicitly Vulkan-only. You must launch Minecraft with the Vulkan backend enabled.
 
@@ -92,7 +92,7 @@ Robloxium's world renderer is explicitly Vulkan-only.
 
 The renderer:
 
-Uses Minecraft 26.2's Blaze3D RenderSetup / RenderPipeline abstraction.
+Uses Minecraft 26.3's Blaze3D RenderSetup / RenderPipeline abstraction.
 Does not import or call com.mojang.blaze3d.opengl.*.
 Checks the active GpuDevice backend before submitting Roblox geometry.
 Throws a deliberately obvious ROBLOXIUM VULKAN ERROR if the active backend is OpenGL.
@@ -100,7 +100,7 @@ Uses Sampler0 for Roblox textures.
 Uses .useLightmap() to supply Sampler2, preventing the Vulkan Missing sampler Sampler2 failure.
 Uses the same Vulkan-safe submission path for Roblox geometry, materials, SurfaceTypes, and other world rendering.
 
-Minecraft 26.2 provides the Blaze3D rendering abstraction for its supported graphics backends. Robloxium uses that abstraction while deliberately requiring Vulkan for this build.
+Minecraft 26.3 provides the Blaze3D rendering abstraction for its supported graphics backends. Robloxium uses that abstraction while deliberately requiring Vulkan for this build.
 
 Vulkan World Rendering
 
@@ -120,4 +120,4 @@ Translucent geometry
 Surface overlays
 Sky geometry
 
-The renderer provides a dedicated 2010 Roblox world-rendering path using Minecraft 26.2's Blaze3D/Vulkan architecture.
+The renderer provides a dedicated 2010 Roblox world-rendering path using Minecraft 26.3's Blaze3D/Vulkan architecture.

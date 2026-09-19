@@ -22,7 +22,7 @@ public final class RobloxiumClient implements ClientModInitializer {
             .then(ClientCommands.literal("unload").executes(c->unload(c.getSource())))
             .then(ClientCommands.literal("info").executes(c->{var g=HOST.game();c.getSource().sendFeedback(Component.literal("Robloxium 3 | "+(g.running()?"running":"stopped")+" | Parts: "+g.workspace().parts().size()+" | Tick: "+g.tick()));return 1;}))
             .then(ClientCommands.literal("roblox2010").then(ClientCommands.literal("start").executes(c->{var r=Roblox2010Sidecar.start();c.getSource().sendFeedback(r.component());return r.success()?1:0;})).then(ClientCommands.literal("stop").executes(c->{var r=Roblox2010Sidecar.stop();c.getSource().sendFeedback(r.component());return r.success()?1:0;})).then(ClientCommands.literal("status").executes(c->{c.getSource().sendFeedback(Component.literal(Roblox2010Sidecar.status()));return 1;})))));
-        System.out.println("[Robloxium] "+Robloxium.BUILD_ID+" | Minecraft 26.2 host / 2010 guest");
+        System.out.println("[Robloxium] "+Robloxium.BUILD_ID+" | Minecraft 26.3 host / 2010 guest");
         if(Roblox2010Sidecar.autoStartEnabled())System.out.println("[Robloxium] 2010 sidecar: "+Roblox2010Sidecar.start().message());
     }
 
