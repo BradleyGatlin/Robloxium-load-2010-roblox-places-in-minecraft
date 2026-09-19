@@ -31,14 +31,14 @@ import java.util.zip.GZIPInputStream;
 
 import javax.imageio.ImageIO;
 
-import com.mojang.renderpearl.PrimitiveTopology;
-import com.mojang.renderpearl.pipeline.ColorTargetState;
-import com.mojang.renderpearl.pipeline.DepthStencilState;
-import com.mojang.renderpearl.pipeline.RenderPipeline;
-import com.mojang.renderpearl.platform.CompareOp;
+import com.mojang.blaze3d.PrimitiveTopology;
+import com.mojang.blaze3d.pipeline.ColorTargetState;
+import com.mojang.blaze3d.pipeline.DepthStencilState;
+import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.platform.CompareOp;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.renderpearl.textures.AddressMode;
-import com.mojang.renderpearl.textures.FilterMode;
+import com.mojang.blaze3d.textures.AddressMode;
+import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
