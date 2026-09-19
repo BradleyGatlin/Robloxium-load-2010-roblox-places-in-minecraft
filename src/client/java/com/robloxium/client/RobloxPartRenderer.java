@@ -31,7 +31,6 @@ import java.util.zip.GZIPInputStream;
 
 import javax.imageio.ImageIO;
 
-import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
@@ -1902,7 +1901,34 @@ public final class RobloxPartRenderer {
         private static int lerp(int a,int b,double t){return (int)Math.round(a+(b-a)*t);}
     }
 
-    private enum PipelineKind { OPAQUE, TRANSLUCENT, SURFACE, SKY }\n\n    private static RenderType textureType(Identifier texture,PipelineKind kind){\n        requireVulkanBackend();\n        Map<Identifier,RenderType> cache=switch(kind){\n            case OPAQUE -> OPAQUE_TEXTURE_TYPES;\n            case TRANSLUCENT -> TRANSLUCENT_TEXTURE_TYPES;\n            case SURFACE -> SURFACE_TEXTURE_TYPES;\n            case SKY -> SKY_TEXTURE_TYPES;\n        };\n        return cache.computeIfAbsent(texture,id->RenderType.create(\n            "robloxium:vulkan_2010_"+kind.name().toLowerCase(Locale.ROOT)+"_"+id.getPath().replace('/','_'),\n            RenderSetup.builder(RenderPipelines.GUI_TEXTURED)\n                .withTexture("Sampler0",id)\n                .createRenderSetup()));\n    }\n\n    private static final Map<Identifier,RenderType> OPAQUE_TEXTURE_TYPES=new HashMap<>();\n    private static final Map<Identifier,RenderType> TRANSLUCENT_TEXTURE_TYPES=new HashMap<>();\n    private static final Map<Identifier,RenderType> SURFACE_TEXTURE_TYPES=new HashMap<>();\n    private static final Map<Identifier,RenderType> SKY_TEXTURE_TYPES=new HashMap<>();\n\n    private static RenderType repeatTextureType(Identifier texture){return textureType(texture,PipelineKind.OPAQUE);}\n    private static RenderType translucentTextureType(Identifier texture){return textureType(texture,PipelineKind.TRANSLUCENT);}\n    private static RenderType surfaceTextureType(Identifier texture){return textureType(texture,PipelineKind.SURFACE);}\n    private static RenderType skyTextureType(Identifier texture){return textureType(texture,PipelineKind.SKY);}\n\n    private static void vertexSurface(PoseStack.Pose pose,VertexConsumer b,Vec3 v,int c,float u,float vv,Vec3 n,RobloxPart p){
+    private static final Map<Identifier,RenderType> OPAQUE_TEXTURE_TYPES=new HashMap<>();
+    private static final Map<Identifier,RenderType> TRANSLUCENT_TEXTURE_TYPES=new HashMap<>();
+    private static final Map<Identifier,RenderType> SURFACE_TEXTURE_TYPES=new HashMap<>();
+    private static final Map<Identifier,RenderType> SKY_TEXTURE_TYPES=new HashMap<>();
+
+    private enum PipelineKind { OPAQUE, TRANSLUCENT, SURFACE, SKY }
+
+    private static RenderType textureType(Identifier texture,PipelineKind kind){
+        requireVulkanBackend();
+        Map<Identifier,RenderType> cache=switch(kind){
+            case OPAQUE -> OPAQUE_TEXTURE_TYPES;
+            case TRANSLUCENT -> TRANSLUCENT_TEXTURE_TYPES;
+            case SURFACE -> SURFACE_TEXTURE_TYPES;
+            case SKY -> SKY_TEXTURE_TYPES;
+        };
+        return cache.computeIfAbsent(texture,id->RenderType.create(
+            "robloxium:vulkan_2010_"+kind.name().toLowerCase(Locale.ROOT)+"_"+id.getPath().replace('/','_'),
+            RenderSetup.builder(RenderPipelines.GUI_TEXTURED)
+                .withTexture("Sampler0",id)
+                .createRenderSetup()));
+    }
+
+    private static RenderType repeatTextureType(Identifier texture){return textureType(texture,PipelineKind.OPAQUE);}
+    private static RenderType translucentTextureType(Identifier texture){return textureType(texture,PipelineKind.TRANSLUCENT);}
+    private static RenderType surfaceTextureType(Identifier texture){return textureType(texture,PipelineKind.SURFACE);}
+    private static RenderType skyTextureType(Identifier texture){return textureType(texture,PipelineKind.SKY);}
+
+    private static void vertexSurface(PoseStack.Pose pose,VertexConsumer b,Vec3 v,int c,float u,float vv,Vec3 n,RobloxPart p){
         Vec3 normal=n.normalized();
         double ndl=Math.max(0,normal.dot(CURRENT_SUN));
         double shadow=shadowMask(p,v,normal);
