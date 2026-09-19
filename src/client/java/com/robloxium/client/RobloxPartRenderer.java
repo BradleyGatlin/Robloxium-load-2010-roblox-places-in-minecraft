@@ -930,13 +930,15 @@ public final class RobloxPartRenderer {
         if(data==null||data.length<8)return false;
         if(data[0]==0x1f&&data[1]==(byte)0x8b)return true;
         String head=new String(data,0,Math.min(data.length,16),StandardCharsets.US_ASCII);
-        return head.startsWith("version ")||head.contains("\nv ")||head.startsWith("#")||head.startsWith("v ");
+        return head.startsWith("version ")||head.contains("
+v ")||head.startsWith("#")||head.startsWith("v ");
     }
 
     private static String jsonString(String json,String key){
         Matcher m=Pattern.compile("\""+Pattern.quote(key)+"\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"").matcher(json);
         if(!m.find())return null;
-        return m.group(1).replace("\\/","/").replace("\\n","").replace("\\\"","\"");
+        return m.group(1).replace("\\/","/").replace("\
+","").replace("\\\"","\"");
     }
 
     private static byte[] maybeGunzip(byte[] data){
@@ -1075,7 +1077,8 @@ public final class RobloxPartRenderer {
     static OnlineMesh parseRobloxMesh(byte[] data){
         try{
             int lineEnd=0;
-            while(lineEnd<data.length && data[lineEnd]!='\n')lineEnd++;
+            while(lineEnd<data.length && data[lineEnd]!='
+')lineEnd++;
             if(lineEnd>=data.length)return null;
             String header=new String(data,0,lineEnd,StandardCharsets.US_ASCII).trim();
             if(header.endsWith("\r"))header=header.substring(0,header.length()-1);
@@ -1902,7 +1905,34 @@ public final class RobloxPartRenderer {
         private static int lerp(int a,int b,double t){return (int)Math.round(a+(b-a)*t);}
     }
 
-    private enum PipelineKind { OPAQUE, TRANSLUCENT, SURFACE, SKY }\n\n    private static RenderType textureType(Identifier texture,PipelineKind kind){\n        requireVulkanBackend();\n        Map<Identifier,RenderType> cache=switch(kind){\n            case OPAQUE -> OPAQUE_TEXTURE_TYPES;\n            case TRANSLUCENT -> TRANSLUCENT_TEXTURE_TYPES;\n            case SURFACE -> SURFACE_TEXTURE_TYPES;\n            case SKY -> SKY_TEXTURE_TYPES;\n        };\n        return cache.computeIfAbsent(texture,id->RenderType.create(\n            "robloxium:vulkan_2010_"+kind.name().toLowerCase(Locale.ROOT)+"_"+id.getPath().replace('/','_'),\n            RenderSetup.builder(RenderPipelines.GUI_TEXTURED)\n                .withTexture("Sampler0",id)\n                .createRenderSetup()));\n    }\n\n    private static final Map<Identifier,RenderType> OPAQUE_TEXTURE_TYPES=new HashMap<>();\n    private static final Map<Identifier,RenderType> TRANSLUCENT_TEXTURE_TYPES=new HashMap<>();\n    private static final Map<Identifier,RenderType> SURFACE_TEXTURE_TYPES=new HashMap<>();\n    private static final Map<Identifier,RenderType> SKY_TEXTURE_TYPES=new HashMap<>();\n\n    private static RenderType repeatTextureType(Identifier texture){return textureType(texture,PipelineKind.OPAQUE);}\n    private static RenderType translucentTextureType(Identifier texture){return textureType(texture,PipelineKind.TRANSLUCENT);}\n    private static RenderType surfaceTextureType(Identifier texture){return textureType(texture,PipelineKind.SURFACE);}\n    private static RenderType skyTextureType(Identifier texture){return textureType(texture,PipelineKind.SKY);}\n\n    private static void vertexSurface(PoseStack.Pose pose,VertexConsumer b,Vec3 v,int c,float u,float vv,Vec3 n,RobloxPart p){
+    private enum PipelineKind { OPAQUE, TRANSLUCENT, SURFACE, SKY }
+
+    private static RenderType textureType(Identifier texture,PipelineKind kind){
+        requireVulkanBackend();
+        Map<Identifier,RenderType> cache=switch(kind){
+            case OPAQUE -> OPAQUE_TEXTURE_TYPES;
+            case TRANSLUCENT -> TRANSLUCENT_TEXTURE_TYPES;
+            case SURFACE -> SURFACE_TEXTURE_TYPES;
+            case SKY -> SKY_TEXTURE_TYPES;
+        };
+        return cache.computeIfAbsent(texture,id->RenderType.create(
+            "robloxium:vulkan_2010_"+kind.name().toLowerCase(Locale.ROOT)+"_"+id.getPath().replace('/','_'),
+            RenderSetup.builder(RenderPipelines.GUI_TEXTURED)
+                .withTexture("Sampler0",id)
+                .createRenderSetup()));
+    }
+
+    private static final Map<Identifier,RenderType> OPAQUE_TEXTURE_TYPES=new HashMap<>();
+    private static final Map<Identifier,RenderType> TRANSLUCENT_TEXTURE_TYPES=new HashMap<>();
+    private static final Map<Identifier,RenderType> SURFACE_TEXTURE_TYPES=new HashMap<>();
+    private static final Map<Identifier,RenderType> SKY_TEXTURE_TYPES=new HashMap<>();
+
+    private static RenderType repeatTextureType(Identifier texture){return textureType(texture,PipelineKind.OPAQUE);}
+    private static RenderType translucentTextureType(Identifier texture){return textureType(texture,PipelineKind.TRANSLUCENT);}
+    private static RenderType surfaceTextureType(Identifier texture){return textureType(texture,PipelineKind.SURFACE);}
+    private static RenderType skyTextureType(Identifier texture){return textureType(texture,PipelineKind.SKY);}
+
+    private static void vertexSurface(PoseStack.Pose pose,VertexConsumer b,Vec3 v,int c,float u,float vv,Vec3 n,RobloxPart p){
         Vec3 normal=n.normalized();
         double ndl=Math.max(0,normal.dot(CURRENT_SUN));
         double shadow=shadowMask(p,v,normal);
